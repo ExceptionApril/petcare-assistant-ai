@@ -92,7 +92,7 @@ with st.sidebar:
         if api_key_input:
             try:
                 genai.configure(api_key=api_key_input)
-                st.session_state.model = genai.GenerativeModel('gemini-1.0-pro')
+                st.session_state.model = genai.GenerativeModel('gemini-2.0-flash')
                 st.success("✅ API key configured!")
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
