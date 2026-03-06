@@ -11,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better UI
+
 st.markdown("""
     <style>
     .main {
@@ -92,7 +92,7 @@ with st.sidebar:
         if api_key_input:
             try:
                 genai.configure(api_key=api_key_input)
-                st.session_state.model = genai.GenerativeModel('gemini-pro')
+                st.session_state.model = genai.GenerativeModel('gemini-1.5-flash')
                 st.success("✅ API key configured!")
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
