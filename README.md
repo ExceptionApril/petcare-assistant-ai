@@ -72,26 +72,12 @@ Sample test cases are documented in [SAMPLE_TESTS.md](SAMPLE_TESTS.md) with real
 - Multi-language support
 - Image upload capabilities
 
-## 📖 Documentation
 
-- [Progress Report](PROGRESS_REPORT.md) - Detailed midterm progress documentation
-- [Sample Tests](SAMPLE_TESTS.md) - Test cases with expected outputs
-
-## 🔑 Getting a Free API Key
+Getting a Free API Key
 
 1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
 2. Sign in with your Google account
 3. Click "Create API Key"
 4. Copy the key and paste it in the app's sidebar
 
-## ⚠️ Disclaimer
 
-This AI assistant provides general information only. Always consult a licensed veterinarian for medical advice and serious health concerns.
-
-## 📝 License
-
-This is a student project for educational purposes.
-
----
-
-**Built with ❤️ using Streamlit and Google Gemini**
