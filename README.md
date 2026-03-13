@@ -1,6 +1,6 @@
-# 🐾 PetCare Assistant AI
+# 🐾 Petlio
 
-An intelligent AI-powered chatbot that provides pet owners with expert advice on health, nutrition, behavior, and medication for their beloved pets.
+Petlio is an intelligent AI-powered chatbot that provides pet owners with expert advice on health, nutrition, behavior, and medication for their beloved pets.
 
 ## 🌟 Features
 
@@ -32,6 +32,7 @@ streamlit run app.py
 3. **Configure API:**
    - Open http://localhost:8501 in your browser
    - Enter your Google Gemini API key in the sidebar
+   - Click **Use Input Key**
    - Select your pet type and age
    - Start chatting!
 
@@ -73,7 +74,16 @@ Sample test cases are documented in [SAMPLE_TESTS.md](SAMPLE_TESTS.md) with real
 - Image upload capabilities
 
 
-Getting a Free API Key
+## 🔑 API Key Input and Output
+
+Petlio supports API key input and output directly in the sidebar:
+
+- **Input:** Paste your key into `Google Gemini API Key Input`
+- **Apply:** Click `Use Input Key`
+- **Output:** View masked key in `API Key Output` or enable `Show full API key output`
+- **Environment fallback:** `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+
+## 🔑 Getting a Free API Key
 
 1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
 2. Sign in with your Google account
