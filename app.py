@@ -1,6 +1,4 @@
 
-"""Single-page Petlio chat wireframe rendered in Streamlit."""
-
 import json
 import os
 import threading
@@ -24,9 +22,79 @@ GEMINI_PROXY_HOST = "127.0.0.1"
 GEMINI_PROXY_PORT = 8767
 _PROXY_STARTED = False
 
+# === PROMPT SYSTEM - Multiple prompts for stricter enforcement ===
+
+ROLE_DEFINITION = (
+    "You are Petlio, a strict pet-care assistant for first-time pet owners. "
+    "Your sole purpose is to help users with all aspects of pet care. "
+    "You are knowledgeable, friendly, practical, and concise."
+)
+
+ALLOWED_TOPICS = (
+    "Allowed topics: pet health, nutrition, feeding schedules, grooming, behavior, training, "
+    "exercise, adoption, pet safety, vaccinations, parasite prevention, first aid, emergency care, "
+    "pet wellness, pet selection, breed information, and general pet wellbeing."
+)
+
+SCOPE_GUARD_RULE = (
+    "CRITICAL RULE - Before answering ANY question: "
+    "If the user's question is NOT about pet care, you MUST respond with ONLY: "
+    "'I can only help with pet care questions.' "
+    "Do NOT add any other text. Do NOT explain. Do NOT try to partially answer. "
+    "Out-of-scope examples: coding, JSON, programming, math homework, politics, finance, recipes, travel, history, science, trivia, sports."
+)
+
+PARTIAL_REQUEST_RULE = (
+    "If a request blends pet-care and non-pet topics (e.g., 'How to feed my dog AND build a REST API?'), "
+    "answer ONLY the pet-care portion and completely ignore the non-pet portion. "
+    "If you cannot extract a valid pet-care question, refuse with: 'I can only help with pet care questions.'"
+)
+
+RESPONSE_QUALITY_RULES = (
+    "Response guidelines: "
+    "Keep advice practical, actionable, and concise. "
+    "Use simple language for first-time pet owners. "
+    "When uncertain about medical/health issues, recommend consulting a veterinarian. "
+    "Never invent information—only provide established pet care best practices."
+)
+
+SCHEDULE_FORMAT_RULE = (
+    "When a user asks about a feeding schedule, meal times, or daily routine for any pet, "
+    "you MUST respond using EXACTLY this tagged format and nothing else outside the tags:\n"
+    "[SCHEDULE]\n"
+    "Title: <schedule title here>\n"
+    "Row: <time> | <description>\n"
+    "Row: <time> | <description>\n"
+    "Note: <note text here>\n"
+    "[/SCHEDULE]\n"
+    "Example:\n"
+    "[SCHEDULE]\n"
+    "Title: Puppy Feeding Schedule (2-6 months)\n"
+    "Row: 8:00 AM | Morning meal - 1/2 cup puppy food + fresh water\n"
+    "Row: 12:00 PM | Midday meal - 1/2 cup puppy food + water check\n"
+    "Row: 5:00 PM | Evening meal - 1/2 cup puppy food + fresh water\n"
+    "Note: Adjust portions based on breed size and activity level.\n"
+    "[/SCHEDULE]\n"
+    "Always tailor the schedule to the specific pet type, breed, and age the user mentions. "
+    "Do NOT add any text outside the [SCHEDULE]...[/SCHEDULE] tags."
+)
+
+def _build_system_prompt() -> str:
+    """Build the complete system prompt by combining all rules."""
+    return "\n\n".join([
+        ROLE_DEFINITION,
+        ALLOWED_TOPICS,
+        SCOPE_GUARD_RULE,
+        PARTIAL_REQUEST_RULE,
+        RESPONSE_QUALITY_RULES,
+        SCHEDULE_FORMAT_RULE,
+    ])
+
+PET_CARE_SYSTEM_PROMPT = _build_system_prompt()
+
 
 def _build_reply(api_key: str, prompt: str) -> dict:
-    """Use OpenRouter with OpenAI Python client - unified API for all models."""
+    """Use OpenRouter with OpenAI Python client - unified API for all models."""  
     try:
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
@@ -39,7 +107,7 @@ def _build_reply(api_key: str, prompt: str) -> dict:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are Petlio, a helpful and friendly pet care assistant for first-time pet owners. Keep advice practical and concise."
+                    "content": PET_CARE_SYSTEM_PROMPT
                 },
                 {
                     "role": "user",
@@ -173,16 +241,6 @@ def nav_sidebar() -> str:
                 </div>
                 <button id="new-chat-btn" class="new-chat-btn">+ New Chat</button>
             </div>
-
-            <nav class="nav-menu">
-                <button class="nav-item">My Pets</button>
-                <button class="nav-item">Pet Care Topics</button>
-                <button class="nav-item">Pet Statistics</button>
-                <button class="nav-item">Preferences</button>
-                <button class="nav-item">Pet Care Help</button>
-            </nav>
-
-            <div class="nav-bottom">Log out</div>
         </aside>
         """
 
@@ -208,13 +266,7 @@ def main_area() -> str:
             <section id="chat-scroll" class="chat-scroll">
                 <div id="messages" class="messages"></div>
 
-                <article class="feeding-card">
-                    <h3>Puppy Feeding Schedule (2-6 months)</h3>
-                    <div class="card-row"><span>8:00 AM</span><span>Morning meal - 1/2 cup puppy food + fresh water</span></div>
-                    <div class="card-row"><span>12:00 PM</span><span>Midday meal - 1/2 cup puppy food + water check</span></div>
-                    <div class="card-row"><span>5:00 PM</span><span>Evening meal - 1/2 cup puppy food + fresh water</span></div>
-                    <div class="card-note"><strong>Note:</strong> Adjust portions based on breed size and activity level.</div>
-                </article>
+
             </section>
 
             <footer class="chat-footer">
@@ -239,15 +291,8 @@ def right_sidebar() -> str:
         return """
         <aside class="right-sidebar">
             <h2>Pet Care Chats</h2>
-            <button class="log active"><span>How often should I feed my puppy?</span><small>2m ago</small></button>
-            <button class="log"><span>Best toys for kitten teething</span><small>1h ago</small></button>
-            <button class="log"><span>Vaccination schedule for dogs</span><small>3h ago</small></button>
-            <button class="log"><span>Potty training tips for puppy</span><small>1d ago</small></button>
-            <button class="log"><span>Cat litter box maintenance</span><small>2d ago</small></button>
-            <button class="log"><span>How much exercise for dogs</span><small>3d ago</small></button>
-            <button class="log"><span>Grooming basics for cats</span><small>1w ago</small></button>
-            <button class="log"><span>Pet-proofing my apartment</span><small>1w ago</small></button>
-            <div class="clear-history">Clear history</div>
+            <div id="chat-history-list" class="chat-history-list"></div>
+            <button id="clear-history-btn" class="clear-history">Clear history</button>
         </aside>
         """
 
@@ -313,11 +358,11 @@ def build_html(api_key: str) -> str:
                     }}
 
                     * {{ box-sizing: border-box; }}
-                    html, body {{ margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: "Segoe UI", Tahoma, sans-serif; }}
+                    html, body {{ margin: 0; width: 100%; height: 100vh; overflow: hidden; font-family: "Segoe UI", Tahoma, sans-serif; }}
 
                     .shell {{
                         width: 100%;
-                        height: 100%;
+                        height: 100vh;
                         display: grid;
                         grid-template-columns: 56px 220px 1fr 240px;
                         overflow: hidden;
@@ -395,20 +440,6 @@ def build_html(api_key: str) -> str:
                         transition: transform 150ms ease, filter 150ms ease;
                     }}
                     .new-chat-btn:hover {{ transform: translateY(-1px); filter: brightness(1.02); }}
-
-                    .nav-menu {{ padding: 14px; display: grid; gap: 6px; flex: 1; }}
-                    .nav-item {{
-                        text-align: left;
-                        border: none;
-                        border-radius: 9px;
-                        background: transparent;
-                        color: var(--gray-700);
-                        padding: 10px 12px;
-                        cursor: pointer;
-                        transition: 180ms ease;
-                    }}
-                    .nav-item:hover {{ background: #ffffff; }}
-                    .nav-bottom {{ border-top: 1px solid var(--gray-200); padding: 14px 16px; color: var(--gray-700); font-size: 14px; }}
 
                     .chat-main {{ display: flex; flex-direction: column; background: var(--white); min-width: 0; height: 100%; overflow: hidden; }}
                     .chat-header {{
@@ -561,9 +592,10 @@ def build_html(api_key: str) -> str:
                         overflow-x: hidden;
                         display: flex;
                         flex-direction: column;
-                        gap: 6px;
+                        gap: 8px;
                     }}
                     .right-sidebar h2 {{ margin: 0 0 8px; font-size: 22px; color: #111827; }}
+                    .chat-history-list {{ display: grid; gap: 6px; }}
                     .log {{
                         text-align: left;
                         border: 1px solid transparent;
@@ -579,7 +611,18 @@ def build_html(api_key: str) -> str:
                     .log:hover {{ border-color: #e5e7eb; background: #fafafa; }}
                     .log span {{ color: #111827; font-size: 15px; line-height: 1.25; }}
                     .log small {{ color: #6b7280; font-size: 12px; }}
-                    .clear-history {{ margin-top: auto; color: #f0b84d; font-size: 14px; text-align: right; cursor: pointer; }}
+                    .clear-history {{
+                        margin-top: auto;
+                        border: 1px solid var(--gray-200);
+                        background: #ffffff;
+                        color: #4b5563;
+                        font-size: 13px;
+                        border-radius: 8px;
+                        padding: 8px 10px;
+                        cursor: pointer;
+                        text-align: center;
+                    }}
+                    .clear-history:hover {{ background: #f9fafb; border-color: #d1d5db; }}
 
                     .modal {{
                         position: fixed;
@@ -661,22 +704,15 @@ def build_html(api_key: str) -> str:
                     const sendBtn = document.getElementById("send-btn");
                     const modal = document.getElementById("new-chat-modal");
                     const apiKeyModal = document.getElementById("api-key-modal");
+                    const historyListEl = document.getElementById("chat-history-list");
+                    const clearHistoryBtn = document.getElementById("clear-history-btn");
                     let runtimeApiKey = "";
 
-                    const initialMessages = [
-                        {{
-                            sender: "user",
-                            text: "I just adopted a Golden Retriever puppy! Can you help me understand what I need to know as a first-time dog owner?",
-                            time: "10:00 AM"
-                        }},
-                        {{
-                            sender: "ai",
-                            text: "Congratulations on your new puppy! As a first-time Golden Retriever owner, I will help with feeding schedules, house training, socialization, and vaccination planning. What would you like to start with?",
-                            time: "10:01 AM"
-                        }}
-                    ];
+                    const initialMessages = [];
 
-                    let messages = [...initialMessages];
+                    let messages = [];
+                    let conversations = [];
+                    let activeConversationId = null;
 
                     function getTime() {{
                         const d = new Date();
@@ -687,29 +723,149 @@ def build_html(api_key: str) -> str:
                         return `${{h}}:${{m}} ${{ap}}`;
                     }}
 
-                    function rowTemplate(msg) {{
-                        const isUser = msg.sender === "user";
-                        const safeText = escapeHtml(msg.text).replace(/\\n/g, "<br>");
-                        const safeTime = escapeHtml(msg.time);
-                        return `
-                            <div class="msg-row ${{isUser ? "user" : "ai"}}">
-                                ${{!isUser ? '<div class="avatar ai">AI</div>' : ""}}
-                                <div class="bubble ${{isUser ? "user" : "ai"}}">
-                                    <div>${{safeText}}</div>
-                                    <div class="time">${{safeTime}}</div>
-                                </div>
-                                ${{isUser ? '<div class="avatar user">ME</div>' : ""}}
-                            </div>
-                        `;
-                    }}
-
                     function escapeHtml(text) {{
                         return String(text || "")
                             .replace(/&/g, "&amp;")
                             .replace(/</g, "&lt;")
                             .replace(/>/g, "&gt;")
-                            .replace(/\"/g, "&quot;")
+                            .replace(/"/g, "&quot;")
                             .replace(/'/g, "&#39;");
+                    }}
+
+                    function parseScheduleCard(text) {{
+                        var start = text.indexOf("[SCHEDULE]");
+                        var end = text.indexOf("[/SCHEDULE]");
+                        if (start === -1 || end === -1) return null;
+                        var inner = text.slice(start + 10, end).trim();
+                        var lines = inner.split("\\n");
+                        var title = "", rows = [], note = "";
+                        for (var i = 0; i < lines.length; i++) {{
+                            var line = lines[i].trim();
+                            if (line.indexOf("Title:") === 0) {{
+                                title = line.slice(6).trim();
+                            }} else if (line.indexOf("Row:") === 0) {{
+                                var parts = line.slice(4).split("|");
+                                rows.push({{ time: (parts[0] || "").trim(), desc: (parts[1] || "").trim() }});
+                            }} else if (line.indexOf("Note:") === 0) {{
+                                note = line.slice(5).trim();
+                            }}
+                        }}
+                        return {{ title: title, rows: rows, note: note }};
+                    }}
+
+                    function scheduleCardTemplate(data, time) {{
+                        var rowsHtml = "";
+                        for (var i = 0; i < data.rows.length; i++) {{
+                            rowsHtml += '<div class="card-row">'
+                                + '<span>' + escapeHtml(data.rows[i].time) + '</span>'
+                                + '<span>' + escapeHtml(data.rows[i].desc) + '</span>'
+                                + '</div>';
+                        }}
+                        var noteHtml = data.note
+                            ? '<div class="card-note"><strong>Note:</strong> ' + escapeHtml(data.note) + '</div>'
+                            : "";
+                        return '<div class="msg-row ai">'
+                            + '<div class="avatar ai">AI</div>'
+                            + '<div style="flex:1;min-width:0;">'
+                            + '<article class="feeding-card">'
+                            + '<h3>' + escapeHtml(data.title) + '</h3>'
+                            + rowsHtml
+                            + noteHtml
+                            + '</article>'
+                            + '<div class="time" style="padding-left:4px;margin-top:4px;">' + escapeHtml(time) + '</div>'
+                            + '</div>'
+                            + '</div>';
+                    }}
+
+                    function applyMarkdown(text) {{
+                        return escapeHtml(text)
+                            .replace(/\\*\\*(.*?)\\*\\*/g, "<strong>$1</strong>")
+                            .replace(/\\*(.*?)\\*/g, "<em>$1</em>")
+                            .replace(/\\n/g, "<br>");
+                    }}
+
+                    function rowTemplate(msg) {{
+                        var isUser = msg.sender === "user";
+                        if (!isUser) {{
+                            var card = parseScheduleCard(msg.text);
+                            if (card) return scheduleCardTemplate(card, msg.time);
+                        }}
+                        var safeText = applyMarkdown(msg.text);
+                        var safeTime = escapeHtml(msg.time);
+                        var avatarAi = !isUser ? '<div class="avatar ai">AI</div>' : "";
+                        var avatarUser = isUser ? '<div class="avatar user">ME</div>' : "";
+                        var bubbleClass = isUser ? "user" : "ai";
+                        var rowClass = isUser ? "user" : "ai";
+                        return '<div class="msg-row ' + rowClass + '">'
+                            + avatarAi
+                            + '<div class="bubble ' + bubbleClass + '">'
+                            + '<div>' + safeText + '</div>'
+                            + '<div class="time">' + safeTime + '</div>'
+                            + '</div>'
+                            + avatarUser
+                            + '</div>';
+                    }}
+
+                    function cloneMessages(items) {{
+                        return (items || []).map((item) => ({{
+                            sender: item.sender,
+                            text: item.text,
+                            time: item.time,
+                        }}));
+                    }}
+
+                    function buildChatTitle(items) {{
+                        const firstUser = (items || []).find((item) => item.sender === "user");
+                        if (!firstUser || !firstUser.text) return "New chat";
+                        const title = String(firstUser.text).trim();
+                        if (!title) return "New chat";
+                        return title.length > 34 ? `${{title.slice(0, 34)}}...` : title;
+                    }}
+
+                    function createConversation(seedMessages) {{
+                        const convo = {{
+                            id: `chat_${{Date.now()}}_${{Math.random().toString(36).slice(2, 7)}}`,
+                            messages: cloneMessages(seedMessages || []),
+                            title: buildChatTitle(seedMessages || []),
+                            updatedAt: Date.now(),
+                        }};
+                        conversations.unshift(convo);
+                        return convo;
+                    }}
+
+                    function saveActiveConversation() {{
+                        const index = conversations.findIndex((item) => item.id === activeConversationId);
+                        if (index === -1) return;
+                        conversations[index].messages = cloneMessages(messages);
+                        conversations[index].title = buildChatTitle(messages);
+                        conversations[index].updatedAt = Date.now();
+                        conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+                    }}
+
+                    function renderHistory() {{
+                        if (!historyListEl) return;
+                        historyListEl.innerHTML = conversations.map((item) => {{
+                            const activeClass = item.id === activeConversationId ? "active" : "";
+                            const timeLabel = new Date(item.updatedAt).toLocaleTimeString([], {{ hour: "numeric", minute: "2-digit" }});
+                            return `
+                                <button class="log ${{activeClass}}" data-chat-id="${{item.id}}">
+                                    <span>${{escapeHtml(item.title)}}</span>
+                                    <small>${{escapeHtml(timeLabel)}}</small>
+                                </button>
+                            `;
+                        }}).join("");
+
+                        historyListEl.querySelectorAll(".log").forEach((btn) => {{
+                            btn.addEventListener("click", () => {{
+                                const id = btn.getAttribute("data-chat-id") || "";
+                                const selected = conversations.find((item) => item.id === id);
+                                if (!selected) return;
+                                activeConversationId = selected.id;
+                                messages = cloneMessages(selected.messages);
+                                render();
+                                renderHistory();
+                            }});
+                        }});
                     }}
 
                     function typingTemplate() {{
@@ -807,6 +963,8 @@ def build_html(api_key: str) -> str:
                                 time: getTime()
                             }});
                             render();
+                            saveActiveConversation();
+                            renderHistory();
                         }} finally {{
                             const typing = document.getElementById("typing-row");
                             if (typing) typing.remove();
@@ -844,6 +1002,10 @@ def build_html(api_key: str) -> str:
                         const saveApiKeyBtn = document.getElementById("save-api-key");
                         const clearApiKeyBtn = document.getElementById("clear-api-key");
 
+                        const starter = createConversation(initialMessages);
+                        activeConversationId = starter.id;
+                        messages = cloneMessages(starter.messages);
+
                         if (newChatBtn) {{
                             newChatBtn.addEventListener("click", () => {{
                                 modal.classList.remove("hidden");
@@ -858,9 +1020,26 @@ def build_html(api_key: str) -> str:
 
                         if (confirmBtn) {{
                             confirmBtn.addEventListener("click", () => {{
-                                messages = [...initialMessages];
+                                saveActiveConversation();
+                                const newChat = createConversation([]);
+                                activeConversationId = newChat.id;
+                                messages = [];
                                 render();
+                                renderHistory();
                                 modal.classList.add("hidden");
+                                chatInput.focus();
+                            }});
+                        }}
+
+                        if (clearHistoryBtn) {{
+                            clearHistoryBtn.addEventListener("click", () => {{
+                                conversations = [];
+                                const fresh = createConversation([]);
+                                activeConversationId = fresh.id;
+                                messages = [];
+                                render();
+                                renderHistory();
+                                chatInput.focus();
                             }});
                         }}
 
@@ -905,6 +1084,7 @@ def build_html(api_key: str) -> str:
                         }}
 
                         render();
+                        renderHistory();
                     }}
 
                     bootstrap();
