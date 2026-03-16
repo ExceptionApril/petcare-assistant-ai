@@ -216,17 +216,28 @@ PETLIO_LOGO = (
     "</svg>"
 )
 
+AI_REPLY_ICON = (
+    "<svg viewBox='0 0 64 64' aria-hidden='true'>"
+    "<rect x='8' y='8' width='40' height='40' rx='11' ry='11' fill='none' stroke='currentColor' stroke-width='3'/>"
+    "<rect x='16' y='16' width='34' height='34' rx='10' ry='10' fill='none' stroke='currentColor' stroke-width='3'/>"
+    "<path d='M20 35c2.5-5 7-8 13-8h7a3 3 0 0 0 3-3v-3.5l4.5 2.8a12 12 0 0 1 5.2 10.2v4.8c0 8.8-7.2 16-16 16H28c-8.8 0-16-7.2-16-16v-3.3z' fill='none' stroke='currentColor' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/>"
+    "<circle cx='38.5' cy='30.5' r='5.3' fill='#f5c563'/>"
+    "<circle cx='38.5' cy='30.5' r='2.2' fill='currentColor'/>"
+    "<path d='M22 39h13.5a3.5 3.5 0 0 1 3.5 3.5V45h-17z' fill='#f5c563'/>"
+    "</svg>"
+)
+
 
 def icon_sidebar() -> str:
         return f"""
         <aside class="icon-sidebar">
             <div class="icon-logo">{PETLIO_LOGO}</div>
             <div class="icon-links">
-                <button title="Home">H</button>
-                <button title="Chats">C</button>
-                <button title="Stats">S</button>
+                <button title="Home" aria-label="Home"></button>
+                <button title="Chats" aria-label="Chats"></button>
+                <button title="Stats" aria-label="Stats"></button>
             </div>
-            <button class="icon-settings" title="Settings">G</button>
+            <button class="icon-settings" title="Settings" aria-label="Settings"></button>
         </aside>
         """
 
@@ -256,11 +267,6 @@ def main_area() -> str:
                         <p>Your friendly pet care companion</p>
                     </div>
                 </div>
-                <div class="assistant-actions">
-                    <button id="api-key-btn" title="Set API Key">K</button>
-                    <button title="Notifications">N</button>
-                    <button title="Menu">M</button>
-                </div>
             </header>
 
             <section id="chat-scroll" class="chat-scroll">
@@ -275,6 +281,7 @@ def main_area() -> str:
                     <button data-prompt="What vaccinations does my pet need?">Health</button>
                     <button data-prompt="How do I train my pet?">Training</button>
                     <button data-prompt="What are essential daily care tips?">Care Tips</button>
+                    <button data-prompt="What are signs my pet is sick and needs a vet?">Warning Signs</button>
                 </div>
 
                 <div class="input-row">
@@ -334,6 +341,7 @@ def api_key_modal() -> str:
 
 def build_html(api_key: str) -> str:
     api_key_json = json.dumps(api_key)
+    ai_reply_icon_json = json.dumps(AI_REPLY_ICON)
     return f"""
         <!doctype html>
         <html>
@@ -513,6 +521,7 @@ def build_html(api_key: str) -> str:
                     }}
                     .avatar.ai {{ background: linear-gradient(135deg, var(--accent-1), var(--accent-2)); color: #111827; }}
                     .avatar.user {{ background: #1f2937; color: #fff; }}
+                    .avatar.ai svg {{ width: 24px; height: 24px; }}
                     .bubble {{ max-width: min(640px, 75%); border-radius: 14px; padding: 12px 14px; line-height: 1.45; font-size: 14px; }}
                     .bubble.user {{ background: linear-gradient(135deg, var(--accent-1), var(--accent-2)); color: #111827; }}
                     .bubble.ai {{ background: #fff; border: 1px solid var(--gray-200); color: #111827; }}
@@ -698,6 +707,7 @@ def build_html(api_key: str) -> str:
 
                 <script>
                     const GEMINI_API_KEY = {api_key_json};
+                    const AI_REPLY_ICON = {ai_reply_icon_json};
                     const GEMINI_PROXY_URL = "http://127.0.0.1:8767/api/openrouter";
                     const messagesEl = document.getElementById("messages");
                     const chatInput = document.getElementById("chat-input");
@@ -792,7 +802,7 @@ def build_html(api_key: str) -> str:
                         }}
                         var safeText = applyMarkdown(msg.text);
                         var safeTime = escapeHtml(msg.time);
-                        var avatarAi = !isUser ? '<div class="avatar ai">AI</div>' : "";
+                        var avatarAi = !isUser ? '<div class="avatar ai">' + AI_REPLY_ICON + '</div>' : "";
                         var avatarUser = isUser ? '<div class="avatar user">ME</div>' : "";
                         var bubbleClass = isUser ? "user" : "ai";
                         var rowClass = isUser ? "user" : "ai";
@@ -869,14 +879,12 @@ def build_html(api_key: str) -> str:
                     }}
 
                     function typingTemplate() {{
-                        return `
-                            <div id="typing-row" class="msg-row ai">
-                                <div class="avatar ai">AI</div>
-                                <div class="bubble ai">
-                                    <div class="typing"><span></span><span></span><span></span></div>
-                                </div>
-                            </div>
-                        `;
+                        return '<div id="typing-row" class="msg-row ai">'
+                            + '<div class="avatar ai">' + AI_REPLY_ICON + '</div>'
+                            + '<div class="bubble ai">'
+                            + '<div class="typing"><span></span><span></span><span></span></div>'
+                            + '</div>'
+                            + '</div>';
                     }}
 
                     function render() {{
