@@ -1,6 +1,7 @@
 """Petlio Design System - Fullscreen layout with 100% coverage"""
 from urllib.parse import quote
 import streamlit as st
+import base64
 
 APP_NAME = "Petlio"
 MODEL_NAME = "gemini-2.0-flash"
@@ -23,11 +24,10 @@ COLORS = {
 }
 
 
-def petlio_logo_svg() -> str:
-    """Generate Petlio logo SVG"""
-    svg = """<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#F5C563;stop-opacity:1" /><stop offset="100%" style="stop-color:#f0b84d;stop-opacity:1" /></linearGradient></defs><circle cx="50" cy="50" r="45" fill="url(#goldGrad)" opacity="0.2"/><circle cx="35" cy="35" r="8" fill="#F5C563"/><circle cx="65" cy="35" r="8" fill="#F5C563"/><circle cx="50" cy="65" r="8" fill="#F5C563"/><path d="M 40 50 Q 50 60 60 50" stroke="#F5C563" stroke-width="2" fill="none"/></svg>"""
-    return f"data:image/svg+xml;utf8,{quote(svg)}"
-
+def petlio_logo_svg():
+    with open("./img/petlio_logo.png", "rb") as f:
+        data = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:image/png;base64,{data}"
 
 CSS = """<style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
