@@ -1,4 +1,3 @@
-
 import json
 import os
 import threading
@@ -9,7 +8,7 @@ from urllib import request as urlrequest
 import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
-
+from design import petlio_logo_svg
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -208,12 +207,9 @@ def ensure_gemini_proxy() -> None:
     import time
     time.sleep(0.5)  # Give the server time to start
     _PROXY_STARTED = True
+
 PETLIO_LOGO = (
-    "<svg viewBox='0 0 32 32' aria-hidden='true'>"
-    "<circle cx='10' cy='10' r='4' fill='currentColor'/>"
-    "<circle cx='22' cy='10' r='4' fill='currentColor'/>"
-    "<circle cx='16' cy='22' r='5' fill='currentColor'/>"
-    "</svg>"
+     f"<img src='{petlio_logo_svg()}' style='width:24px;height:24px;'>"
 )
 
 AI_REPLY_ICON = (
@@ -366,14 +362,15 @@ def build_html(api_key: str) -> str:
                     }}
 
                     * {{ box-sizing: border-box; }}
-                    html, body {{ margin: 0; width: 100%; height: 100vh; overflow: hidden; font-family: "Segoe UI", Tahoma, sans-serif; }}
-
+                    html, body {{ margin: 0; width: 100%; height: 100vh; overflow: hidden; font-family: "Segoe UI", Tahoma, sans-serif; background: #f5f7fa;}}
+                    
                     .shell {{
                         width: 100%;
-                        height: 100vh;
+                        height: 98vh;
                         display: grid;
                         grid-template-columns: 56px 220px 1fr 240px;
                         overflow: hidden;
+                        
                     }}
 
                     .icon-sidebar {{
@@ -384,6 +381,10 @@ def build_html(api_key: str) -> str:
                         align-items: center;
                         padding: 12px 0;
                         gap: 18px;
+                        border-radius: 16px;
+                        box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+                        margin: 10px 10px 10px 0;
+                        box-shadow: 0 6px 20px rgba(0,0,0,0.05)
                     }}
 
                     .icon-logo {{
@@ -420,6 +421,10 @@ def build_html(api_key: str) -> str:
                         display: flex;
                         flex-direction: column;
                         overflow: hidden;
+                        border-top-right-radius: 16px;
+                        border-bottom-right-radius: 16px;
+                        margin: 10px 10px 10px 0;
+                        box-shadow: 0 6px 20px rgba(0,0,0,0.05)
                     }}
 
                     .nav-top {{ padding: 16px; border-bottom: 1px solid var(--gray-200); }}
@@ -428,7 +433,7 @@ def build_html(api_key: str) -> str:
                         width: 30px;
                         height: 30px;
                         border-radius: 8px;
-                        background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+                        background: linear-gradient(90deg, #97b9bf, #e8ad7e);
                         color: #111827;
                         display: grid;
                         place-items: center;
@@ -449,7 +454,18 @@ def build_html(api_key: str) -> str:
                     }}
                     .new-chat-btn:hover {{ transform: translateY(-1px); filter: brightness(1.02); }}
 
-                    .chat-main {{ display: flex; flex-direction: column; background: var(--white); min-width: 0; height: 100%; overflow: hidden; }}
+                    .chat-main {{ 
+                        display: flex; 
+                        flex-direction: column; 
+                        background: #fff9e6; 
+                        min-width: 0; height: 100%; 
+                        overflow: hidden;
+                        border-radius: 16px;
+                        box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+                        margin: 10px 10px 10px 0;
+                        box-shadow: 0 6px 20px rgba(0,0,0,0.05);
+                        }}
+
                     .chat-header {{
                         height: 64px;
                         min-height: 64px;
@@ -462,13 +478,13 @@ def build_html(api_key: str) -> str:
                         flex-shrink: 0;
                     }}
                     .assistant-left {{ display: flex; align-items: center; gap: 10px; }}
-                    .assistant-badge {{
+                    .assistant-badge {{ 
                         width: 34px;
                         height: 34px;
                         border-radius: 50%;
                         display: grid;
                         place-items: center;
-                        background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+                        background: linear-gradient(90deg, #97b9bf, #e8ad7e);
                         color: #111827;
                         font-weight: 700;
                     }}
@@ -555,8 +571,14 @@ def build_html(api_key: str) -> str:
                         display: grid;
                         gap: 8px;
                         flex-shrink: 0;
+                        border-radius: 16px;
+                        margin: 12px;
+                        box-shadow:
+                            0 4px 8px rgba(0,0,0,0.04),
+                            0 12px 24px rgba(0,0,0,0.08),
+                            0 20px 40px rgba(0,0,0,0.04);
                     }}
-                    .quick-actions {{ display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }}
+                    .quick-actions {{ display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; justify-content: center; }}
                     .quick-actions button {{
                         border: 1px solid var(--gray-200);
                         border-radius: 999px;
@@ -602,6 +624,10 @@ def build_html(api_key: str) -> str:
                         display: flex;
                         flex-direction: column;
                         gap: 8px;
+                        border-top-left-radius: 16px;
+                        border-bottom-left-radius: 16px;
+                        margin: 10px 10px 10px 0;
+                        box-shadow: 0 6px 20px rgba(0,0,0,0.05);
                     }}
                     .right-sidebar h2 {{ margin: 0 0 8px; font-size: 22px; color: #111827; }}
                     .chat-history-list {{ display: grid; gap: 6px; }}
