@@ -21,32 +21,50 @@ GEMINI_PROXY_HOST = "127.0.0.1"
 GEMINI_PROXY_PORT = 8767
 _PROXY_STARTED = False
 
-# === PROMPT SYSTEM - Multiple prompts for stricter enforcement ===
+# === PROMPT SYSTEM ===
 
 ROLE_DEFINITION = (
-    "You are Petlio, a strict pet-care assistant for first-time pet owners. "
-    "Your sole purpose is to help users with all aspects of pet care. "
-    "You are knowledgeable, friendly, practical, and concise."
+    "You are Petlio, a friendly and knowledgeable pet-care assistant for first-time pet owners. "
+    "Your sole purpose is to help users with all aspects of caring for any type of pet. "
+    "You are warm, practical, and concise."
 )
 
 ALLOWED_TOPICS = (
-    "Allowed topics: pet health, nutrition, feeding schedules, grooming, behavior, training, "
-    "exercise, adoption, pet safety, vaccinations, parasite prevention, first aid, emergency care, "
-    "pet wellness, pet selection, breed information, and general pet wellbeing."
+    "You help with ALL of the following pet-care topics (this list is not exhaustive): "
+    "feeding and nutrition, feeding schedules, food types and amounts, grooming, bathing, "
+    "training and behavior, exercise and play, health and wellness, vaccinations, "
+    "parasite prevention, first aid, emergency care, vet visits, pet adoption, "
+    "breed information, pet safety, cage or habitat setup, and general pet wellbeing. "
+    "This applies to dogs, cats, birds, fish, rabbits, hamsters, guinea pigs, reptiles, "
+    "monkeys, turtles, snakes, and any other animal kept as a pet."
+)
+
+IN_SCOPE_PRIORITY_RULE = (
+    "ALWAYS ANSWER questions that mention: a pet, an animal, feeding, grooming, training, "
+    "health, vet, breed, habitat, or any animal species. "
+    "Examples you MUST answer (do NOT refuse these): "
+    "'What should I feed my pet?', "
+    "'What vaccinations does my dog need?', "
+    "'How do I train my cat?', "
+    "'I have a monkey, what do I feed it?', "
+    "'What should I feed my monkey?', "
+    "'How do I groom my rabbit?', "
+    "'Is my fish sick?'. "
+    "If the question is even loosely related to a pet or animal, answer it helpfully."
 )
 
 SCOPE_GUARD_RULE = (
-    "CRITICAL RULE - Before answering ANY question: "
-    "If the user's question is NOT about pet care, you MUST respond with ONLY: "
-    "'I can only help with pet care questions.' "
-    "Do NOT add any other text. Do NOT explain. Do NOT try to partially answer. "
-    "Out-of-scope examples: coding, JSON, programming, math homework, politics, finance, recipes, travel, history, science, trivia, sports."
+    "ONLY refuse — with exactly 'I can only help with pet care questions.' and nothing else — "
+    "when the question has absolutely no connection to any animal or pet care. "
+    "Clear refusal examples (no animal or pet mentioned at all): "
+    "'Write me Python code', 'Solve this math problem', 'What is the capital of France?', "
+    "'Give me a pasta recipe', 'Who won the election?'. "
+    "When in doubt, answer as a pet-care assistant."
 )
 
 PARTIAL_REQUEST_RULE = (
     "If a request blends pet-care and non-pet topics (e.g., 'How to feed my dog AND build a REST API?'), "
-    "answer ONLY the pet-care portion and completely ignore the non-pet portion. "
-    "If you cannot extract a valid pet-care question, refuse with: 'I can only help with pet care questions.'"
+    "answer ONLY the pet-care portion and completely ignore the non-pet portion."
 )
 
 RESPONSE_QUALITY_RULES = (
@@ -79,21 +97,65 @@ SCHEDULE_FORMAT_RULE = (
 )
 
 def _build_system_prompt() -> str:
-    """Build the complete system prompt by combining all rules."""
     return "\n\n".join([
         ROLE_DEFINITION,
         ALLOWED_TOPICS,
+        IN_SCOPE_PRIORITY_RULE,
         SCOPE_GUARD_RULE,
         PARTIAL_REQUEST_RULE,
         RESPONSE_QUALITY_RULES,
         SCHEDULE_FORMAT_RULE,
     ])
 
+
+_PET_KEYWORDS = {
+    "pet", "animal", "dog", "cat", "bird", "fish", "rabbit", "hamster",
+    "guinea pig", "turtle", "snake", "parrot", "monkey", "reptile", "puppy",
+    "kitten", "pup", "feline", "canine", "vet", "veterinarian", "feed", "feeding",
+    "groom", "grooming", "train", "training", "breed", "paw", "fur", "feather",
+    "aquarium", "cage", "kennel", "litter", "vaccination", "vaccine", "parasite",
+    "flea", "tick", "worm", "leash", "collar", "habitat", "tank",
+}
+
+_REFUSAL_RESPONSE = "i can only help with pet care questions."
+
+
+def _looks_like_pet_question(prompt: str) -> bool:
+    """Return True if the prompt contains any known pet-related keyword."""
+    lower = prompt.lower()
+    return any(kw in lower for kw in _PET_KEYWORDS)
+
 PET_CARE_SYSTEM_PROMPT = _build_system_prompt()
 
 
+def _call_model(client: OpenAI, system_prompt: str, prompt: str) -> str:
+    """Call the model and return the text response, or empty string on failure."""
+    response = client.chat.completions.create(
+        model="openai/gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.5,
+        max_tokens=700,
+    )
+    try:
+        if response and response.choices and len(response.choices) > 0:
+            choice = response.choices[0]
+            if choice and choice.message and choice.message.content is not None:
+                return str(choice.message.content).strip()
+    except (AttributeError, IndexError, TypeError):
+        pass
+    return ""
+
+
+_OVERRIDE_PROMPT = (
+    "The user is asking a pet-care question. Answer it helpfully and concisely as Petlio."
+)
+
+
 def _build_reply(api_key: str, prompt: str) -> dict:
-    """Use OpenRouter with OpenAI Python client - unified API for all models."""  
+    """Use OpenRouter with OpenAI Python client - unified API for all models."""
     try:
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
@@ -101,34 +163,13 @@ def _build_reply(api_key: str, prompt: str) -> dict:
             timeout=30.0,
         )
 
-        response = client.chat.completions.create(
-            model="openai/gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": PET_CARE_SYSTEM_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.5,
-            max_tokens=700,
-        )
+        text = _call_model(client, PET_CARE_SYSTEM_PROMPT, prompt)
 
-        
-        text = ""
-        try:
-            if response and response.choices and len(response.choices) > 0:
-                choice = response.choices[0]
-                if choice and choice.message:
-                    content = choice.message.content
-                    if content is not None:
-                        text = str(content).strip()
-        except (AttributeError, IndexError, TypeError):
-            text = ""
-        
+        # If the model falsely refused a clearly pet-related question, retry once
+        # with a minimal override system prompt that removes the scope guard.
+        if text.lower().strip().rstrip(".") == _REFUSAL_RESPONSE.rstrip(".") and _looks_like_pet_question(prompt):
+            text = _call_model(client, _OVERRIDE_PROMPT, prompt)
+
         if not text:
             return {"ok": False, "error": "Empty response from OpenRouter. The model may be overloaded, try again."}
         return {"ok": True, "text": text}
