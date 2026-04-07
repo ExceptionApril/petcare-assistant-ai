@@ -10,6 +10,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
 from design import petlio_logo_svg
+
+# Load .env only for local development (not needed in Streamlit Cloud)
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -427,6 +429,10 @@ def _build_reply(api_key: str, prompt: str) -> dict:
         if (_decode_attempt_detection(prompt) or _suspicious_instruction_format(prompt)) and not is_pet_question:
             return {"ok": True, "text": "I can only help with pet care questions."}
 
+        # Validate API key is present and not empty
+        if not api_key or not api_key.strip():
+            return {"ok": False, "error": "API key is missing. Please configure your OpenRouter API key."}
+
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
@@ -483,13 +489,17 @@ class _GeminiProxyHandler(BaseHTTPRequestHandler):
             return
 
         prompt = (payload.get("prompt") or "").strip()
-        api_key = (payload.get("apiKey") or "").strip() or os.getenv("OPENROUTER_API_KEY", "").strip()
+        api_key = (payload.get("apiKey") or "").strip()
         
+        # Validate inputs
         if not api_key:
-            self._send_json(400, {"ok": False, "error": "OpenRouter API key missing"})
+            self._send_json(400, {"ok": False, "error": "OpenRouter API key is required. Get one at https://openrouter.ai"})
             return
         if not prompt:
             self._send_json(400, {"ok": False, "error": "Prompt is required"})
+            return
+        if len(prompt) > 5000:
+            self._send_json(400, {"ok": False, "error": "Prompt is too long (max 5000 characters)"})
             return
         
         result = _build_reply(api_key=api_key, prompt=prompt)
