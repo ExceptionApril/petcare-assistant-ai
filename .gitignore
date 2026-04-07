@@ -23,9 +23,12 @@ wheels/
 .installed.cfg
 *.egg
 
-# Environment variables
+# Environment variables and secrets
 .env
 .env.local
+.env*.local
+.streamlit/secrets.toml
+.streamlit/secrets.*.toml
 
 # IDE
 .vscode/
@@ -38,5 +41,7 @@ wheels/
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/
+# Streamlit cache (deployment-specific)
+.streamlit/cache/
+.streamlit/.streamlitserver
+
