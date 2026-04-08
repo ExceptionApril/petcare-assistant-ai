@@ -18,6 +18,7 @@ except ImportError:
 
 
 APP_NAME = "Petlio AI Assistant"
+APP_VERSION = "2.0-cloud-ready"  # Force Streamlit Cloud redeploy
 
 # === PROMPT SYSTEM ===
 
