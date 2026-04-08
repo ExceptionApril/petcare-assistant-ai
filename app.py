@@ -1,8 +1,6 @@
 import json
 import os
 import re
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -20,9 +18,6 @@ except ImportError:
 
 
 APP_NAME = "Petlio AI Assistant"
-GEMINI_PROXY_HOST = "127.0.0.1"
-GEMINI_PROXY_PORT = 8767
-_PROXY_STARTED = False
 
 # === PROMPT SYSTEM ===
 
@@ -459,76 +454,6 @@ def _build_reply(api_key: str, prompt: str) -> dict:
             error_msg = "Could not connect to OpenRouter. Check your internet connection."
         return {"ok": False, "error": error_msg}
 
-
-class _GeminiProxyHandler(BaseHTTPRequestHandler):
-    def _send_json(self, status: int, payload: dict) -> None:
-        raw = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def do_OPTIONS(self) -> None:
-        self._send_json(200, {"ok": True})
-
-    def do_POST(self) -> None:
-        if self.path != "/api/openrouter":
-            self._send_json(404, {"ok": False, "error": "Not found"})
-            return
-
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8")
-            payload = json.loads(raw) if raw else {}
-        except Exception:
-            self._send_json(400, {"ok": False, "error": "Invalid JSON payload"})
-            return
-
-        prompt = (payload.get("prompt") or "").strip()
-        api_key = (payload.get("apiKey") or "").strip()
-        
-        # Validate inputs
-        if not api_key:
-            self._send_json(400, {"ok": False, "error": "OpenRouter API key is required. Get one at https://openrouter.ai"})
-            return
-        if not prompt:
-            self._send_json(400, {"ok": False, "error": "Prompt is required"})
-            return
-        if len(prompt) > 5000:
-            self._send_json(400, {"ok": False, "error": "Prompt is too long (max 5000 characters)"})
-            return
-        
-        result = _build_reply(api_key=api_key, prompt=prompt)
-        if result.get("ok"):
-            self._send_json(200, result)
-        else:
-            self._send_json(502, result)
-
-    def log_message(self, format: str, *args) -> None:
-        return
-
-
-def ensure_gemini_proxy() -> None:
-    global _PROXY_STARTED
-    if _PROXY_STARTED:
-        return
-
-    def _serve() -> None:
-        try:
-            server = ThreadingHTTPServer((GEMINI_PROXY_HOST, GEMINI_PROXY_PORT), _GeminiProxyHandler)
-            server.serve_forever()
-        except Exception as e:
-            print(f"Proxy server error: {e}")
-
-    thread = threading.Thread(target=_serve, daemon=True)
-    thread.start()
-    import time
-    time.sleep(0.5)
-    _PROXY_STARTED = True
 
 PETLIO_LOGO = (
      f"<img src='{petlio_logo_svg()}' style='width:24px;height:24px;'>"
@@ -1056,7 +981,7 @@ def build_html(api_key: str) -> str:
                 <script>
                     const GEMINI_API_KEY = {api_key_json};
                     const AI_REPLY_ICON = {ai_reply_icon_json};
-                    const GEMINI_PROXY_URL = "http://127.0.0.1:8767/api/openrouter";
+                    const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
                     const messagesEl = document.getElementById("messages");
                     const chatInput = document.getElementById("chat-input");
                     const sendBtn = document.getElementById("send-btn");
@@ -1251,50 +1176,66 @@ def build_html(api_key: str) -> str:
 
                     function initApiKey() {{
                         try {{
-                            const saved = localStorage.getItem("petlio_gemini_api_key") || "";
-                            runtimeApiKey = saved || GEMINI_API_KEY || "";
+                            const saved = localStorage.getItem("petlio_openrouter_api_key") || "";
+                            runtimeApiKey = saved || OPENROUTER_API_KEY || "";
                         }} catch (_error) {{
-                            runtimeApiKey = GEMINI_API_KEY || "";
+                            runtimeApiKey = OPENROUTER_API_KEY || "";
                         }}
                         updateApiKeyStatus();
                     }}
 
                     async function callGemini(prompt) {{
-                        const body = {{ prompt: prompt }};
-                        if (runtimeApiKey) {{
-                            body.apiKey = runtimeApiKey;
+                        if (!runtimeApiKey) {{
+                            return "API key not configured. Please enter your OpenRouter API key in the settings.";
                         }}
 
-                        let response;
-                        try {{
-                            response = await fetch(GEMINI_PROXY_URL, {{
-                                method: "POST",
-                                headers: {{
-                                    "Content-Type": "application/json",
-                                }},
-                                body: JSON.stringify(body)
-                            }});
-                        }} catch (_error) {{
-                            return "Could not reach API proxy. Keep Streamlit running and refresh the page.";
-                        }}
+                        const maxRetries = 3;
+                        for (let attempt = 0; attempt < maxRetries; attempt++) {{
+                            try {{
+                                const response = await fetch(OPENROUTER_API_URL, {{
+                                    method: "POST",
+                                    headers: {{
+                                        "Authorization": `Bearer ${{runtimeApiKey}}`,
+                                        "Content-Type": "application/json",
+                                        "HTTP-Referer": window.location.href,
+                                        "X-Title": "Petlio AI Assistant"
+                                    }},
+                                    body: JSON.stringify({{
+                                        model: "openai/gpt-4o-mini",
+                                        messages: [{{
+                                            role: "system",
+                                            content: "You are Petlio, a friendly and knowledgeable pet-care assistant for first-time pet owners. Your sole purpose is to help users with all aspects of caring for any type of pet. You are warm, practical, and concise. Keep your response under 300 words."
+                                        }}, {{
+                                            role: "user",
+                                            content: prompt
+                                        }}],
+                                        max_tokens: 500,
+                                        temperature: 0.5
+                                    }}),
+                                    signal: AbortSignal.timeout(30000)
+                                }});
 
-                        let data = {{}};
-                        try {{
-                            data = await response.json();
-                        }} catch (_error) {{
-                            data = {{}};
-                        }}
-                        if (!response.ok) {{
-                            const errorText = (data && typeof data.error === "string")
-                                ? data.error
-                                : (data && data.error && data.error.message)
-                                    ? data.error.message
-                                    : `Request failed with status ${{response.status}}`;
-                            return `API error: ${{errorText}}`;
-                        }}
+                                const data = await response.json();
 
-                        const aiText = data && data.text ? String(data.text).trim() : "";
-                        return aiText || "I could not generate a response. Please try rephrasing your question.";
+                                if (!response.ok) {{
+                                    const errorMsg = data?.error?.message || data?.error || "Unknown error";
+                                    if (response.status === 401) {{
+                                        return "Invalid API key. Please check your OpenRouter credentials.";
+                                    }}
+                                    return `API error: ${{errorMsg}}`;
+                                }}
+
+                                const aiText = data?.choices?.[0]?.message?.content?.trim() || "";
+                                return aiText || "I could not generate a response. Please try rephrasing your question.";
+                            }} catch (_error) {{
+                                if (attempt < maxRetries - 1) {{
+                                    await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+                                }} else {{
+                                    return "Network error. Please check your internet connection and try again.";
+                                }}
+                            }}
+                        }}
+                        return "Failed to reach API after multiple attempts. Please try again.";
                     }}
 
                     async function sendMessage(text) {{
@@ -1457,8 +1398,6 @@ def main() -> None:
         initial_sidebar_state="collapsed",
         menu_items={"Get help": None, "Report a bug": None, "About": None},
     )
-
-    ensure_gemini_proxy()
 
     st.markdown(
         """
