@@ -979,7 +979,7 @@ def build_html(api_key: str) -> str:
                 {api_key_modal()}
 
                 <script>
-                    const GEMINI_API_KEY = {api_key_json};
+                    const OPENROUTER_API_KEY = {api_key_json};
                     const AI_REPLY_ICON = {ai_reply_icon_json};
                     const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
                     const messagesEl = document.getElementById("messages");
