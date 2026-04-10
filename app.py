@@ -586,6 +586,9 @@ def api_key_modal() -> str:
 def build_html(api_key: str) -> str:
     api_key_json = json.dumps(api_key)
     ai_reply_icon_json = json.dumps(AI_REPLY_ICON)
+    frontend_system_prompt_json = json.dumps(PET_CARE_SYSTEM_PROMPT)
+    frontend_security_reminder_json = json.dumps(_SECURITY_REMINDER_PROMPT)
+    frontend_refusal_json = json.dumps("I can only help with pet care questions.")
     return f"""
         <!doctype html>
         <html>
@@ -982,6 +985,9 @@ def build_html(api_key: str) -> str:
                 <script>
                     const OPENROUTER_API_KEY = {api_key_json};
                     const AI_REPLY_ICON = {ai_reply_icon_json};
+                    const FRONTEND_SYSTEM_PROMPT = {frontend_system_prompt_json};
+                    const FRONTEND_SECURITY_REMINDER = {frontend_security_reminder_json};
+                    const FRONTEND_REFUSAL = {frontend_refusal_json};
                     const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
                     const messagesEl = document.getElementById("messages");
                     const chatInput = document.getElementById("chat-input");
@@ -1185,9 +1191,52 @@ def build_html(api_key: str) -> str:
                         updateApiKeyStatus();
                     }}
 
+                    function isLikelyPetQuestion(text) {{
+                        const lower = String(text || "").toLowerCase();
+                        const petKeywords = [
+                            "pet", "animal", "dog", "cat", "bird", "fish", "rabbit", "hamster",
+                            "guinea pig", "turtle", "snake", "parrot", "monkey", "reptile", "puppy",
+                            "kitten", "pup", "feline", "canine", "vet", "veterinarian", "feed", "feeding",
+                            "groom", "grooming", "train", "training", "breed", "paw", "fur", "feather",
+                            "aquarium", "cage", "kennel", "litter", "vaccination", "vaccine", "parasite",
+                            "flea", "tick", "worm", "leash", "collar", "habitat", "tank"
+                        ];
+                        return petKeywords.some((kw) => lower.includes(kw));
+                    }}
+
+                    function looksLikeInjection(text) {{
+                        const lower = String(text || "").toLowerCase();
+                        const patterns = [
+                            /ignore\\s+(all\\s+)?(previous|prior)\\s+instructions/,
+                            /disregard\\s+(all\\s+)?(previous|prior)\\s+instructions/,
+                            /reveal\\s+(your|the)\\s+(hidden\\s+|system\\s+)?prompt/,
+                            /show\\s+(me\\s+)?(your\\s+)?rules/,
+                            /what\\s+are\\s+your\\s+(base\\s+)?instructions/,
+                            /jailbreak|hidden\\s+rules|internal\\s+policy/,
+                            /act\\s+as\\s+(a\\s+)?(system|developer|root|admin|hacker)/,
+                            /you\\s+are\\s+now|from\\s+now\\s+on\\s+you\\s+are/,
+                            /bypass\\s+(safety|policy|guardrails?|restrictions?|limitations?)/,
+                            /disable\\s+(safety|policy|guardrails?|restrictions?|limitations?)/,
+                            /no\\s+rules?\\s+mode|unrestricted\\s+mode/,
+                            /<system>|<admin>|<override>|\\[system\\]|\\[admin\\]|\\[override\\]/,
+                            /```|~~~/,
+                            /base64|b64|decode|decipher|unhex|rot13|cipher/
+                        ];
+                        return patterns.some((pattern) => pattern.test(lower));
+                    }}
+
                     async function callGemini(prompt) {{
                         if (!runtimeApiKey) {{
                             return "API key not configured. Please enter your OpenRouter API key in the settings.";
+                        }}
+
+                        const hasPetIntent = isLikelyPetQuestion(prompt);
+                        const injectionDetected = looksLikeInjection(prompt);
+                        if (!hasPetIntent) {{
+                            return FRONTEND_REFUSAL;
+                        }}
+                        if (injectionDetected && !hasPetIntent) {{
+                            return FRONTEND_REFUSAL;
                         }}
 
                         const maxRetries = 3;
@@ -1205,10 +1254,13 @@ def build_html(api_key: str) -> str:
                                         model: "openai/gpt-4o-mini",
                                         messages: [{{
                                             role: "system",
-                                            content: "You are Petlio, a friendly and knowledgeable pet-care assistant for first-time pet owners. Your sole purpose is to help users with all aspects of caring for any type of pet. You are warm, practical, and concise. Keep your response under 300 words."
+                                            content: FRONTEND_SYSTEM_PROMPT
+                                        }}, {{
+                                            role: "system",
+                                            content: FRONTEND_SECURITY_REMINDER
                                         }}, {{
                                             role: "user",
-                                            content: prompt
+                                            content: `<untrusted_user_input>\n${{prompt}}\n</untrusted_user_input>`
                                         }}],
                                         max_tokens: 500,
                                         temperature: 0.5
@@ -1362,9 +1414,9 @@ def build_html(api_key: str) -> str:
                                 runtimeApiKey = (apiKeyInput.value || "").trim();
                                 try {{
                                     if (runtimeApiKey) {{
-                                        localStorage.setItem("petlio_gemini_api_key", runtimeApiKey);
+                                        localStorage.setItem("petlio_openrouter_api_key", runtimeApiKey);
                                     }} else {{
-                                        localStorage.removeItem("petlio_gemini_api_key");
+                                        localStorage.removeItem("petlio_openrouter_api_key");
                                     }}
                                 }} catch (_error) {{}}
                                 updateApiKeyStatus();
@@ -1376,7 +1428,7 @@ def build_html(api_key: str) -> str:
                             clearApiKeyBtn.addEventListener("click", () => {{
                                 runtimeApiKey = "";
                                 apiKeyInput.value = "";
-                                try {{ localStorage.removeItem("petlio_gemini_api_key"); }} catch (_error) {{}}
+                                try {{ localStorage.removeItem("petlio_openrouter_api_key"); }} catch (_error) {{}}
                                 updateApiKeyStatus();
                             }});
                         }}
