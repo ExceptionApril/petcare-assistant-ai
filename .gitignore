@@ -45,3 +45,9 @@ Thumbs.db
 .streamlit/cache/
 .streamlit/.streamlitserver
 
+
+# Secrets and Cache
+.env
+.chroma_db/
+.chroma_db_test/
+
