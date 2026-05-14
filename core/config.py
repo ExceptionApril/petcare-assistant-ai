@@ -31,8 +31,11 @@ class Config:
         # Load local .env file if it exists
         load_dotenv()
         
-        self.gemini_api_key = self._get_env_or_secret("GEMINI_API_KEY", required=True)
+        self.gemini_api_key = self._get_env_or_secret("GEMINI_API_KEY", default="")
         self.openrouter_api_key = self._get_env_or_secret("OPENROUTER_API_KEY", default="")
+        
+        if not self.gemini_api_key and not self.openrouter_api_key:
+            raise EnvironmentError("Missing required configuration: Must provide either GEMINI_API_KEY or OPENROUTER_API_KEY")
         
         self.chroma_persist_dir = self._get_env_or_secret("CHROMA_PERSIST_DIR", default="./.chroma_db")
         self.rag_data_dir = self._get_env_or_secret("RAG_DATA_DIR", default="./data")

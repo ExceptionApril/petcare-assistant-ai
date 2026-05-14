@@ -1,30 +1,37 @@
-from llama_index.core import VectorStoreIndex
+from llama_index.core import VectorStoreIndex, Settings
+
 
 def get_query_engine(index: VectorStoreIndex, top_k: int = 3, llm=None):
     """
-    Return index.as_query_engine(similarity_top_k=top_k)
+    Build a query engine.
+    If `llm` is given, use it explicitly.
+    Otherwise use whatever is in Settings.llm (which app.py sets via _configure_global_llm).
     """
-    if llm:
+    if llm is not None:
         return index.as_query_engine(similarity_top_k=top_k, llm=llm)
     return index.as_query_engine(similarity_top_k=top_k)
 
+
 def rag_query(query: str, query_engine) -> tuple[str, list[str]]:
     """
-    Run query. Return (answer_text, list_of_source_filenames).
-    Always append to response: '📚 Sources: {sources}' if sources exist.
+    Run a RAG query.
+    Returns (answer_str, list_of_source_filenames).
+    Appends '📚 Sources: ...' to the answer if sources are found.
     """
-    response = query_engine.query(query)
-    answer_text = str(response)
-    
-    sources = []
-    if response.source_nodes:
-        for node in response.source_nodes:
-            file_name = node.metadata.get("file_name")
-            if file_name and file_name not in sources:
-                sources.append(file_name)
-                
-    if sources:
-        sources_str = ", ".join(sources)
-        answer_text += f"\n\n📚 Sources: {sources_str}"
-        
-    return answer_text, sources
+    try:
+        response = query_engine.query(query)
+        answer = str(response).strip()
+
+        sources = []
+        if hasattr(response, "source_nodes") and response.source_nodes:
+            for node in response.source_nodes:
+                fname = node.metadata.get("file_name") or node.metadata.get("filename", "")
+                if fname and fname not in sources:
+                    sources.append(fname)
+
+        if sources:
+            answer += "\n\n📚 Sources: " + ", ".join(sources)
+
+        return answer, sources
+    except Exception as e:
+        return f"I couldn't retrieve information from the knowledge base: {e}", []

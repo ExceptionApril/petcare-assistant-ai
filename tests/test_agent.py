@@ -10,7 +10,7 @@ def test_web_search_tool_returns_string():
         mock_instance.text.return_value = [
             {"title": "Test Title", "href": "http://test.com", "body": "Test Body"}
         ]
-        
+
         result = web_search("dog food")
         assert isinstance(result, str)
         assert "Test Title" in result
