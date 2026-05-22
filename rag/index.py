@@ -1,8 +1,17 @@
 import os
 import time
 from llama_index.core import VectorStoreIndex, StorageContext, Settings
-from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
+
+# Handle import compatibility for different LlamaIndex versions
+try:
+    from llama_index_vector_stores_chroma import ChromaVectorStore
+except ImportError:
+    try:
+        from llama_index.vector_stores.chroma import ChromaVectorStore
+    except ImportError:
+        from llama_index.legacy.vector_stores.chroma import ChromaVectorStore
+
 from rag.loader import load_documents, get_embed_model
 
 def build_or_load_index(data_dir: str, persist_dir: str) -> VectorStoreIndex:

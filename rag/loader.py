@@ -1,6 +1,14 @@
 import streamlit as st
 from llama_index.core import SimpleDirectoryReader, Settings
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+# Handle import compatibility for different LlamaIndex versions
+try:
+    from llama_index_embeddings_huggingface import HuggingFaceEmbedding
+except ImportError:
+    try:
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+    except ImportError:
+        from llama_index.legacy.embeddings.huggingface import HuggingFaceEmbedding
 
 def load_documents(data_dir: str) -> list:
     """

@@ -1,31 +1,24 @@
 # Core UI
 streamlit>=1.35.0
 
-# LLM Providers
-openai>=1.30.0
-google-generativeai>=0.7.0
-anthropic>=0.28.0
+# LLM - OpenRouter with OpenAI SDK
+openai>=1.0.0
 
-# RAG — LlamaIndex
-llama-index-core>=0.10.50
-llama-index-embeddings-huggingface>=0.2.0
-llama-index-vector-stores-chroma>=0.1.10
-llama-index-llms-openai>=0.1.0
-llama-index-llms-gemini>=0.1.0
+# RAG & Embeddings (Ollama local, no sentence-transformers)
 chromadb>=0.5.0
-
-# Agentic AI
-llama-index-agent-openai>=0.2.0
-duckduckgo-search>=6.0.0
+pypdf>=4.0.0
 requests>=2.31.0
 
-# Prompt Management
-langfuse>=2.30.0
+# Agentic AI
+duckduckgo-search>=6.0.0
+
+# Prompt Management & Observability
+langfuse>=2.36.0
 
 # Security & Utilities
 python-dotenv>=1.0.0
 pydantic>=2.6.0
-tiktoken>=0.7.0
+tiktoken>=0.6.0
 
 # Testing
 pytest>=8.0.0

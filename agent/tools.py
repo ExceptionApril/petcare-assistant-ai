@@ -1,24 +1,78 @@
 from llama_index.core.tools import FunctionTool
-from duckduckgo_search import DDGS
+import time
 
+# Handle optional duckduckgo_search import
+try:
+    from duckduckgo_search import DDGS
+    DDGS_AVAILABLE = True
+except ImportError:
+    DDGS_AVAILABLE = False
+    DDGS = None
+
+# Global context for tracing (set by app during agent execution)
+_tool_context = {
+    "tracer": None,
+    "trace_id": ""
+}
+
+def set_tool_context(tracer, trace_id: str):
+    """Set the tracer context for all tools in this session."""
+    _tool_context["tracer"] = tracer
+    _tool_context["trace_id"] = trace_id
+
+def _log_tool_execution(tool_name: str, input_params: dict, output: str = "", error: str = "", latency_ms: int = 0):
+    """Helper to log tool execution with tracing."""
+    tracer = _tool_context.get("tracer")
+    trace_id = _tool_context.get("trace_id", "")
+    
+    if tracer and tracer.is_enabled() and trace_id:
+        tracer.log_tool_call(
+            trace_id=trace_id,
+            tool_name=tool_name,
+            input_params=input_params,
+            output=output if not error else None,
+            error=error if error else None,
+            latency_ms=latency_ms
+        )
 
 # ── Web Search ────────────────────────────────────────────────────────────────
 
 def web_search(query: str) -> str:
     """Search the web for current pet care information using DuckDuckGo."""
+    start_time = time.time()
+    input_params = {"query": query}
+    
+    if not DDGS_AVAILABLE:
+        error_msg = "Web search unavailable. DuckDuckGo library not installed."
+        latency_ms = int((time.time() - start_time) * 1000)
+        _log_tool_execution("web_search", input_params, error=error_msg, latency_ms=latency_ms)
+        return error_msg + " Please consult a veterinarian for specific health questions."
+    
     pet_keywords = ["pet", "dog", "cat", "bird", "fish", "rabbit", "vet", "animal", "puppy", "kitten"]
     if not any(kw in query.lower() for kw in pet_keywords):
         query = "pet care " + query
+    
     try:
         results = DDGS().text(query, max_results=3)
+        latency_ms = int((time.time() - start_time) * 1000)
+        
         if not results:
-            return "No results found for that query."
+            output = "No results found for that query."
+            _log_tool_execution("web_search", input_params, output=output, latency_ms=latency_ms)
+            return output
+        
         formatted = []
         for r in results:
             formatted.append(f"Title: {r['title']}\nURL: {r['href']}\nSnippet: {r['body']}\n---")
-        return "\n".join(formatted)
+        output = "\n".join(formatted)
+        _log_tool_execution("web_search", input_params, output=output[:500], latency_ms=latency_ms)
+        return output
+        
     except Exception as e:
-        return f"Web search unavailable: {e}"
+        latency_ms = int((time.time() - start_time) * 1000)
+        error_msg = f"Web search unavailable: {e}"
+        _log_tool_execution("web_search", input_params, error=error_msg, latency_ms=latency_ms)
+        return error_msg
 
 
 web_search_tool = FunctionTool.from_defaults(
@@ -32,6 +86,9 @@ web_search_tool = FunctionTool.from_defaults(
 
 def pet_weight_calculator(species: str, weight_kg: float, age_years: float) -> str:
     """Evaluate if a pet's weight is healthy based on species and age."""
+    start_time = time.time()
+    input_params = {"species": species, "weight_kg": weight_kg, "age_years": age_years}
+    
     s = species.lower().strip()
     result = f"Species: {species}, Weight: {weight_kg} kg, Age: {age_years} yr\n"
     if s in ("dog", "canine"):
@@ -64,6 +121,9 @@ def pet_weight_calculator(species: str, weight_kg: float, age_years: float) -> s
             result += "Assessment: Healthy weight range for guinea pig."
     else:
         result += f"Species '{species}' not in database. Please consult a veterinarian directly."
+    
+    latency_ms = int((time.time() - start_time) * 1000)
+    _log_tool_execution("pet_weight_calculator", input_params, output=result, latency_ms=latency_ms)
     return result
 
 
@@ -81,6 +141,9 @@ pet_weight_calculator_tool = FunctionTool.from_defaults(
 
 def medication_schedule(pet_type: str, age_months: int) -> str:
     """Return a recommended vaccination and deworming schedule for a pet."""
+    start_time = time.time()
+    input_params = {"pet_type": pet_type, "age_months": age_months}
+    
     pt = pet_type.lower().strip()
     sched = f"📅 Recommended Schedule — {pet_type.title()} (Age: {age_months} months)\n\n"
     if pt in ("dog", "canine"):
@@ -105,6 +168,9 @@ def medication_schedule(pet_type: str, age_months: int) -> str:
             sched += "• Monthly flea prevention\n"
     else:
         sched += f"No standard schedule available for '{pet_type}'. Please consult a vet."
+    
+    latency_ms = int((time.time() - start_time) * 1000)
+    _log_tool_execution("medication_schedule", input_params, output=sched, latency_ms=latency_ms)
     return sched
 
 
@@ -126,7 +192,9 @@ def get_rag_tool(query_engine):
 
     def rag_lookup(query: str) -> str:
         """Search the internal Petlio knowledge base for reliable pet care information."""
-        answer, _ = rag_query(query, query_engine)
+        tracer = _tool_context.get("tracer")
+        trace_id = _tool_context.get("trace_id", "")
+        answer, _ = rag_query(query, query_engine, tracer=tracer, trace_id=trace_id)
         return answer
 
     return FunctionTool.from_defaults(

@@ -1,77 +1,56 @@
 import os
 from dataclasses import dataclass
-from typing import Optional
 from dotenv import load_dotenv
-import streamlit as st
 
 @dataclass
 class Config:
-    # LLM
-    gemini_api_key: str
+    """Application configuration from environment variables."""
+    
+    # LLM - OpenRouter (required)
     openrouter_api_key: str
+    openrouter_base_url: str
+    openrouter_model: str
     
     # RAG
-    chroma_persist_dir: str
-    rag_data_dir: str
+    chroma_db_path: str
     rag_top_k: int
     
-    # Agentic
-    enable_web_search: bool
-    
-    # Langfuse
-    langfuse_public_key: str
+    # Langfuse (optional)
     langfuse_secret_key: str
-    langfuse_host: str
+    langfuse_public_key: str
+    langfuse_base_url: str
     
     # Security
     max_input_chars: int
     rate_limit_per_minute: int
 
     def __init__(self):
-        # Load local .env file if it exists
+        """Load configuration from environment (.env or system env vars)."""
         load_dotenv()
         
-        self.gemini_api_key = self._get_env_or_secret("GEMINI_API_KEY", default="")
-        self.openrouter_api_key = self._get_env_or_secret("OPENROUTER_API_KEY", default="")
+        # Required: OpenRouter API Key
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        if not self.openrouter_api_key:
+            raise EnvironmentError("Missing required: OPENROUTER_API_KEY")
         
-        if not self.gemini_api_key and not self.openrouter_api_key:
-            raise EnvironmentError("Missing required configuration: Must provide either GEMINI_API_KEY or OPENROUTER_API_KEY")
+        # OpenRouter configuration
+        self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+        self.openrouter_model = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini").strip()
         
-        self.chroma_persist_dir = self._get_env_or_secret("CHROMA_PERSIST_DIR", default="./.chroma_db")
-        self.rag_data_dir = self._get_env_or_secret("RAG_DATA_DIR", default="./data")
-        self.rag_top_k = int(self._get_env_or_secret("RAG_TOP_K", default="3"))
+        # RAG configuration
+        self.chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db").strip()
+        self.rag_top_k = int(os.getenv("RAG_TOP_K", "3"))
         
-        self.enable_web_search = self._get_env_or_secret("ENABLE_WEB_SEARCH", default="true").lower() in ("true", "1", "yes")
+        # Langfuse configuration (optional)
+        self.langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
+        self.langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
+        self.langfuse_base_url = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com").strip()
         
-        self.langfuse_public_key = self._get_env_or_secret("LANGFUSE_PUBLIC_KEY", default="")
-        self.langfuse_secret_key = self._get_env_or_secret("LANGFUSE_SECRET_KEY", default="")
-        self.langfuse_host = self._get_env_or_secret("LANGFUSE_HOST", default="https://cloud.langfuse.com")
-        
-        self.max_input_chars = int(self._get_env_or_secret("MAX_INPUT_CHARS", default="4000"))
-        self.rate_limit_per_minute = int(self._get_env_or_secret("RATE_LIMIT_PER_MINUTE", default="20"))
+        # Security configuration
+        self.max_input_chars = int(os.getenv("MAX_INPUT_CHARS", "4000"))
+        self.rate_limit_per_minute = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
+    
+    def is_langfuse_enabled(self) -> bool:
+        """Check if Langfuse tracing is configured."""
+        return bool(self.langfuse_secret_key and self.langfuse_public_key)
 
-    def _get_env_or_secret(self, key: str, default: str = "", required: bool = False) -> str:
-        """
-        Check Streamlit secrets first, then OS environment (which includes .env).
-        Raises EnvironmentError if required and not found.
-        """
-        value = None
-        
-        # 1. Try Streamlit Secrets first
-        try:
-            if key in st.secrets:
-                value = st.secrets[key]
-        except FileNotFoundError:
-            pass # No secrets file, that's fine
-            
-        # 2. Try OS Environment
-        if value is None:
-            value = os.environ.get(key)
-            
-        # 3. Validation
-        if value is None or str(value).strip() == "":
-            if required:
-                raise EnvironmentError(f"Missing required configuration key: {key}")
-            return default
-            
-        return str(value)
