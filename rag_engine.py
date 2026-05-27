@@ -9,6 +9,8 @@ import re
 import hashlib
 import logging
 import chromadb
+import stat
+import shutil
 from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,40 @@ COLLECTION_NAME = "petcare_docs"
 CHUNK_SIZE      = 500
 CHUNK_OVERLAP   = 50
 TOP_K           = 3
+# ONNX MiniLM with L2 distance on normalized vectors → distance ∈ [0, 2].
+# similarity = 1 - distance.  Empirically: relevant chunks land >= 0.30,
+# random/irrelevant queries score < 0.20.  Set the floor accordingly so
+# the assistant doesn't surface cat.pdf for "what's my cat's name?".
+MIN_SIMILARITY  = 0.30
+
+
+def _ensure_writable(path: str) -> bool:
+    """Ensure directory exists and is writable. Returns True if successful."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        # On Windows, remove read-only attribute recursively
+        for root, dirs, files in os.walk(path):
+            for d in dirs:
+                dir_path = os.path.join(root, d)
+                try:
+                    os.chmod(dir_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                except Exception:
+                    pass
+            for f in files:
+                file_path = os.path.join(root, f)
+                try:
+                    os.chmod(file_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+                except Exception:
+                    pass
+        # Test write capability
+        test_file = os.path.join(path, ".write_test")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+        return True
+    except Exception as e:
+        logger.error("Failed to ensure writable path %s: %s", path, e)
+        return False
 
 
 class RAGEngine:
@@ -32,15 +68,29 @@ class RAGEngine:
     def __init__(self):
         logger.info("Initializing RAG Engine (ONNX embeddings)...")
         self._ef = DefaultEmbeddingFunction()
+        self._is_healthy = False
+
+        # Ensure the path is writable before initializing ChromaDB
+        if not _ensure_writable(CHROMA_PATH):
+            logger.error("Cannot create writable ChromaDB path at %s", CHROMA_PATH)
+            raise RuntimeError(f"ChromaDB path {CHROMA_PATH} is not writable")
 
         try:
             self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
+            self._is_healthy = True
         except Exception as e:
-            logger.warning("ChromaDB init error, resetting store: %s", e)
-            import shutil
-            if os.path.exists(CHROMA_PATH):
-                shutil.rmtree(CHROMA_PATH)
-            self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
+            logger.warning("ChromaDB init error, attempting reset: %s", e)
+            try:
+                # Remove read-only attributes before deletion
+                if os.path.exists(CHROMA_PATH):
+                    _ensure_writable(CHROMA_PATH)
+                    shutil.rmtree(CHROMA_PATH)
+                os.makedirs(CHROMA_PATH, exist_ok=True)
+                self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
+                self._is_healthy = True
+            except Exception as e2:
+                logger.error("ChromaDB reset failed: %s", e2)
+                raise RuntimeError(f"Failed to initialize ChromaDB: {e2}")
 
         self.collection = self._get_or_create_collection()
         logger.info("RAG Engine ready. %d chunks in store.", self.collection.count())
@@ -135,19 +185,47 @@ class RAGEngine:
         if not chunks:
             return 0
         logger.info("Embedding %d chunks for '%s'...", len(chunks), source)
-        # Upsert without pre-computed embeddings — collection EF handles them
-        self.collection.upsert(
-            ids=[c["id"] for c in chunks],
-            documents=[c["text"] for c in chunks],
-            metadatas=[{"source": c["source"], "chunk_index": c["chunk_index"]} for c in chunks],
-        )
-        logger.info("Ingested %d chunks from '%s'. Total: %d", len(chunks), source, self.collection.count())
-        return len(chunks)
+        try:
+            # Upsert without pre-computed embeddings — collection EF handles them
+            self.collection.upsert(
+                ids=[c["id"] for c in chunks],
+                documents=[c["text"] for c in chunks],
+                metadatas=[{"source": c["source"], "chunk_index": c["chunk_index"]} for c in chunks],
+            )
+            logger.info("Ingested %d chunks from '%s'. Total: %d", len(chunks), source, self.collection.count())
+            return len(chunks)
+        except Exception as e:
+            if "readonly" in str(e).lower() or "permission" in str(e).lower():
+                logger.error("Database is read-only, attempting recovery: %s", e)
+                # Try to fix permissions and reinitialize
+                try:
+                    _ensure_writable(CHROMA_PATH)
+                    # Reinitialize the collection
+                    self.collection = self._get_or_create_collection()
+                    # Retry the upsert
+                    self.collection.upsert(
+                        ids=[c["id"] for c in chunks],
+                        documents=[c["text"] for c in chunks],
+                        metadatas=[{"source": c["source"], "chunk_index": c["chunk_index"]} for c in chunks],
+                    )
+                    logger.info("Recovery successful. Ingested %d chunks from '%s'.", len(chunks), source)
+                    return len(chunks)
+                except Exception as e2:
+                    logger.error("Recovery failed: %s", e2)
+                    raise
+            else:
+                logger.error("Ingestion error: %s", e)
+                raise
 
     # ── Retrieval ──────────────────────────────────────────────────────────────
 
-    def retrieve(self, query: str, k: int = TOP_K) -> list:
-        """Return the k most relevant chunks for the query."""
+    def retrieve(self, query: str, k: int = TOP_K, min_similarity: float = MIN_SIMILARITY) -> list:
+        """Return chunks for the query, filtered by similarity threshold.
+
+        Chunks below ``min_similarity`` are dropped so off-topic questions
+        (e.g. asking to recall a name) don't get cat.pdf appended as a
+        "source".  Pass ``min_similarity=0`` to disable filtering.
+        """
         if self.collection.count() == 0:
             return []
         try:
@@ -157,22 +235,54 @@ class RAGEngine:
                 n_results=n,
                 include=["documents", "metadatas", "distances"],
             )
-            chunks = [
-                {
+            chunks = []
+            for doc, meta, dist in zip(
+                results["documents"][0],
+                results["metadatas"][0],
+                results["distances"][0],
+            ):
+                similarity = round(1 - dist, 3)
+                if similarity < min_similarity:
+                    continue
+                chunks.append({
                     "content": doc,
                     "source": meta.get("source", ""),
-                    "similarity": round(1 - dist, 3),
-                }
-                for doc, meta, dist in zip(
-                    results["documents"][0],
-                    results["metadatas"][0],
-                    results["distances"][0],
-                )
-            ]
-            return chunks  # return top-k; similarity shown but not filtered
+                    "similarity": similarity,
+                })
+            return chunks
         except Exception as e:
-            logger.error("Retrieval error: %s", e)
-            return []
+            if "readonly" in str(e).lower() or "permission" in str(e).lower():
+                logger.error("Database read-only during retrieval, attempting recovery: %s", e)
+                try:
+                    _ensure_writable(CHROMA_PATH)
+                    # Retry the query
+                    n = min(k, self.collection.count())
+                    results = self.collection.query(
+                        query_texts=[query],
+                        n_results=n,
+                        include=["documents", "metadatas", "distances"],
+                    )
+                    chunks = []
+                    for doc, meta, dist in zip(
+                        results["documents"][0],
+                        results["metadatas"][0],
+                        results["distances"][0],
+                    ):
+                        similarity = round(1 - dist, 3)
+                        if similarity < min_similarity:
+                            continue
+                        chunks.append({
+                            "content": doc,
+                            "source": meta.get("source", ""),
+                            "similarity": similarity,
+                        })
+                    return chunks
+                except Exception as e2:
+                    logger.error("Retrieval recovery failed: %s", e2)
+                    return []
+            else:
+                logger.error("Retrieval error: %s", e)
+                return []
 
     def get_context_string(self, query: str, k: int = TOP_K) -> str:
         """Retrieve chunks and format them as a context string for the LLM."""
@@ -201,6 +311,16 @@ class RAGEngine:
             return sorted({m["source"] for m in results["metadatas"]})
         except Exception:
             return []
+
+    def is_healthy(self) -> bool:
+        """Check if the RAG engine is healthy and can perform operations."""
+        try:
+            # Test a simple read operation
+            count = self.collection.count()
+            return True
+        except Exception as e:
+            logger.warning("RAG health check failed: %s", e)
+            return False
 
     def clear(self):
         try:

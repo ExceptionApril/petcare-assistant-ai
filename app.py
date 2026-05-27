@@ -74,6 +74,43 @@ def _fmt_friendly_time(dt) -> str:
         return f"{d} days ago"
 
 
+_MEMORY_TRIGGERS = (
+    "recall",
+    "remember",
+    "what did i",
+    "what was",
+    "what's my",
+    "whats my",
+    "what is my",
+    "do you remember",
+    "did i tell you",
+    "i told you",
+    "my name is",
+    "my cat's name",
+    "my cats name",
+    "my dog's name",
+    "my dogs name",
+    "name of my",
+    "the name of my",
+    "earlier i said",
+    "you said earlier",
+    "previous",
+)
+
+
+def _is_memory_question(message: str) -> bool:
+    """True when the user is asking the assistant to recall something from
+    the conversation itself, not a knowledge question about pet care.
+
+    Used to bypass RAG so document chunks don't get injected and steer the
+    LLM away from answering the actual recall question.
+    """
+    if not message:
+        return False
+    low = message.lower()
+    return any(trigger in low for trigger in _MEMORY_TRIGGERS)
+
+
 def _is_injection(message: str) -> bool:
     patterns = [
         "ignore previous instructions",
@@ -261,16 +298,25 @@ def _start_new_chat() -> None:
 def _handle_document_upload(uploaded_file) -> None:
     """Ingest a user-uploaded PDF/TXT into the RAG store."""
     if not uploaded_file or not st.session_state.get("rag"):
+        if uploaded_file:
+            st.warning("📄 RAG system is not available. Documents cannot be indexed at this time.")
         return
-    with st.spinner("Indexing..."):
-        file_bytes = uploaded_file.read()
-        chunks_added = st.session_state.rag.ingest_bytes(file_bytes, uploaded_file.name)
-        _trace_rag(
-            st.session_state.langfuse_tracer,
-            f"Document upload: {uploaded_file.name}",
-            [{"text": f"Ingested {chunks_added} chunks", "source": uploaded_file.name}],
-        )
-        st.toast(f"{uploaded_file.name} indexed ({chunks_added} chunks)", icon="📄")
+    try:
+        with st.spinner("Indexing..."):
+            file_bytes = uploaded_file.read()
+            chunks_added = st.session_state.rag.ingest_bytes(file_bytes, uploaded_file.name)
+            _trace_rag(
+                st.session_state.langfuse_tracer,
+                f"Document upload: {uploaded_file.name}",
+                [{"text": f"Ingested {chunks_added} chunks", "source": uploaded_file.name}],
+            )
+            if chunks_added > 0:
+                st.toast(f"{uploaded_file.name} indexed ({chunks_added} chunks)", icon="📄")
+            else:
+                st.warning(f"⚠️ No content extracted from {uploaded_file.name}")
+    except Exception as exc:
+        logger.error("Document upload error: %s", exc)
+        st.error(f"❌ Failed to index document: {exc}")
 
 
 def _submit_chat_prompt(prompt_text: str) -> None:
@@ -318,32 +364,45 @@ def _process_pending_prompt() -> None:
         st.rerun()
         return
 
-    # RAG retrieval — pass top-k chunks to the LLM as-is. Cosine distance can
-    # exceed 1.0, making similarity negative for legitimate matches; the LLM
-    # is instructed to ignore irrelevant context.
+    # RAG retrieval — only when the prompt looks like a knowledge question.
+    # Personal/memory prompts ("remember my cat's name?") get cat.pdf as a top
+    # match purely on token overlap, which drags the LLM off-task. Skip RAG
+    # for those, and apply a similarity threshold for everything else so
+    # irrelevant chunks aren't surfaced as "sources".
     rag_context = ""
     sources_used: list[str] = []
+    skip_rag = _is_memory_question(prompt_text)
     try:
-        if st.session_state.rag and st.session_state.rag.get_document_count() > 0:
+        if (
+            not skip_rag
+            and st.session_state.rag
+            and st.session_state.rag.get_document_count() > 0
+        ):
             retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=3)
-            relevant_chunks = retrieved_chunks  # no threshold filter
             sources_used = [
                 c.get("source", "")
-                for c in relevant_chunks
+                for c in retrieved_chunks
                 if c.get("source", "") not in ("", "unknown")
             ]
-            if relevant_chunks:
+            if retrieved_chunks:
                 parts = [
                     f"[Document {i} — Source: {c['source']} (relevance: {c['similarity']})]:\n{c['content']}"
-                    for i, c in enumerate(relevant_chunks, 1)
+                    for i, c in enumerate(retrieved_chunks, 1)
                 ]
                 rag_context = "\n\n---\n\n".join(parts)
             _trace_rag(st.session_state.langfuse_tracer, prompt_text, retrieved_chunks)
     except Exception as exc:
         logger.error("RAG error: %s", exc)
+        # If RAG fails with readonly/permission issues, mark it as unhealthy
+        if st.session_state.rag and ("readonly" in str(exc).lower() or "permission" in str(exc).lower()):
+            logger.warning("RAG marked unhealthy due to permission issues")
+            st.session_state.rag = None
+        # Continue without RAG context rather than failing the entire response
 
-    # Conversation history (exclude the user message just added)
-    history_msgs = st.session_state.messages[:-1][-4:]
+    # Conversation history (exclude the user message just added).
+    # 12 messages ≈ 6 turns — enough to recall "my cat is named Mochi" said
+    # a few turns earlier without blowing the context budget on free models.
+    history_msgs = st.session_state.messages[:-1][-12:]
     clean_history = [{"role": m["role"], "content": m["content"]} for m in history_msgs]
 
     # Stream the response using st.status for reasoning steps
@@ -530,6 +589,10 @@ if not st.session_state.get("rag"):
     try:
         from rag_engine import RAGEngine
         st.session_state.rag = RAGEngine()
+        # Verify RAG is healthy
+        if not st.session_state.rag.is_healthy():
+            logger.warning("RAG health check failed, disabling RAG")
+            st.session_state.rag = None
     except Exception as exc:
         logger.exception("RAG initialization failed")
         st.error(f"❌ Failed to initialize RAG: {exc}")
