@@ -356,18 +356,23 @@ def _process_pending_prompt() -> None:
     rag_context = ""
     sources_used: list[str] = []
     retrieved_chunks: list[dict] = []
+    doc_count = 0
     
     logger.info(f"Processing query: '{prompt_text[:100]}'")
     
     try:
         if st.session_state.rag:
             doc_count = st.session_state.rag.get_document_count()
-            logger.info(f"RAG available with {doc_count} documents")
+            logger.info(f"🔍 RAG available with {doc_count} documents")
             
             if doc_count > 0:
-                logger.info(f"Retrieving chunks for: '{prompt_text[:100]}'")
+                logger.info(f"📚 Retrieving chunks for: '{prompt_text[:100]}'")
                 retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=5)
-                logger.info(f"Retrieved {len(retrieved_chunks)} chunks")
+                logger.info(f"✅ Retrieved {len(retrieved_chunks)} chunks from RAG")
+                
+                if not retrieved_chunks:
+                    logger.warning(f"⚠️ ALERT: RAG returned 0 chunks despite {doc_count} documents!")
+                    logger.warning(f"RAG status: {st.session_state.rag.get_status()}")
                 
                 sources_used = [
                     c.get("source", "")
@@ -380,9 +385,11 @@ def _process_pending_prompt() -> None:
                         for i, c in enumerate(retrieved_chunks, 1)
                     ]
                     rag_context = "\n\n---\n\n".join(parts)
+                    logger.info(f"✅ RAG context prepared: {len(rag_context)} chars from {len(parts)} chunks")
             _trace_rag(st.session_state.get("langfuse_tracer"), prompt_text, retrieved_chunks)
     except Exception as exc:
-        logger.error("RAG error: %s", exc)
+        logger.error(f"❌ RAG error: {exc}", exc_info=True)
+        logger.error(f"RAG status: {st.session_state.rag.get_status() if st.session_state.rag else 'None'}")
         # If RAG fails with readonly/permission issues, mark it as unhealthy
         if st.session_state.rag and ("readonly" in str(exc).lower() or "permission" in str(exc).lower()):
             logger.warning("RAG marked unhealthy due to permission issues")
