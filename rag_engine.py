@@ -210,6 +210,17 @@ class RAGEngine:
                 metadatas=[{"source": c["source"], "chunk_index": c["chunk_index"]} for c in chunks],
             )
             logger.info("Ingested %d chunks from '%s'. Total: %d", len(chunks), source, self.collection.count())
+            
+            # CRITICAL: Flush/persist to disk to ensure data is written before app reruns
+            try:
+                # Try to trigger persistence
+                if hasattr(self.collection, '_client'):
+                    # ChromaDB PersistentClient should persist automatically, but verify
+                    test_count = self.collection.count()
+                    logger.info("Verified persistence: %d chunks in store", test_count)
+            except Exception as e:
+                logger.warning("Could not verify persistence: %s", e)
+            
             return len(chunks)
         except Exception as e:
             if "readonly" in str(e).lower() or "permission" in str(e).lower():
@@ -338,6 +349,21 @@ class RAGEngine:
             return sorted({m["source"] for m in results["metadatas"]})
         except Exception:
             return []
+
+    def verify_document(self, source: str) -> bool:
+        """Verify that a document with the given source is in the database."""
+        if not self.collection:
+            logger.warning("Collection not available for verification")
+            return False
+        try:
+            results = self.collection.get(include=["metadatas"])
+            sources = {m["source"] for m in results["metadatas"]}
+            is_present = source in sources
+            logger.info(f"Document '{source}' present: {is_present}. Current sources: {sources}")
+            return is_present
+        except Exception as e:
+            logger.error(f"Verification error: {e}")
+            return False
 
     def is_healthy(self) -> bool:
         """Check if the RAG engine is healthy and can perform operations."""

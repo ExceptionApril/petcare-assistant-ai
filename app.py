@@ -311,8 +311,18 @@ def _handle_document_upload(uploaded_file) -> None:
             
             # Ingest the document
             chunks_added = st.session_state.rag.ingest_bytes(file_bytes, uploaded_file.name)
+            logger.info(f"Ingest result: {chunks_added} chunks added")
             
-            # Verify it was added
+            # Verify it was actually stored
+            if chunks_added > 0:
+                is_persisted = st.session_state.rag.verify_document(uploaded_file.name)
+                logger.info(f"Document persistence check: {is_persisted}")
+                
+                if not is_persisted:
+                    st.warning(f"⚠️ Document was processed but may not have persisted to storage. Chunks: {chunks_added}")
+                    logger.error(f"CRITICAL: Document '{uploaded_file.name}' was ingested but not found in verification!")
+            
+            # Get updated counts
             doc_count = st.session_state.rag.get_document_count()
             sources = st.session_state.rag.get_sources()
             
