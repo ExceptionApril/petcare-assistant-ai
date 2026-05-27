@@ -297,25 +297,40 @@ def _start_new_chat() -> None:
 
 def _handle_document_upload(uploaded_file) -> None:
     """Ingest a user-uploaded PDF/TXT into the RAG store."""
-    if not uploaded_file or not st.session_state.get("rag"):
-        if uploaded_file:
-            st.warning("📄 RAG system is not available. Documents cannot be indexed at this time.")
+    if not uploaded_file:
         return
+    
+    if not st.session_state.get("rag"):
+        st.error("❌ RAG system is not available. Documents cannot be indexed at this time.")
+        return
+    
     try:
-        with st.spinner("Indexing..."):
+        with st.spinner("📚 Indexing document..."):
             file_bytes = uploaded_file.read()
+            logger.info(f"Uploading: {uploaded_file.name} ({len(file_bytes)} bytes)")
+            
+            # Ingest the document
             chunks_added = st.session_state.rag.ingest_bytes(file_bytes, uploaded_file.name)
+            
+            # Verify it was added
+            doc_count = st.session_state.rag.get_document_count()
+            sources = st.session_state.rag.get_sources()
+            
+            logger.info(f"Upload result: {chunks_added} chunks, total docs: {doc_count}, sources: {sources}")
+            
             _trace_rag(
                 st.session_state.langfuse_tracer,
                 f"Document upload: {uploaded_file.name}",
                 [{"text": f"Ingested {chunks_added} chunks", "source": uploaded_file.name}],
             )
+            
             if chunks_added > 0:
-                st.toast(f"{uploaded_file.name} indexed ({chunks_added} chunks)", icon="📄")
+                st.success(f"✅ {uploaded_file.name} indexed ({chunks_added} chunks)")
+                st.info(f"📚 Knowledge base now has {doc_count} document(s): {', '.join(sources)}")
             else:
                 st.warning(f"⚠️ No content extracted from {uploaded_file.name}")
     except Exception as exc:
-        logger.error("Document upload error: %s", exc)
+        logger.error(f"Document upload error: {exc}", exc_info=True)
         st.error(f"❌ Failed to index document: {exc}")
 
 
@@ -372,22 +387,28 @@ def _process_pending_prompt() -> None:
     rag_context = ""
     sources_used: list[str] = []
     skip_rag = _is_memory_question(prompt_text)
+    
+    logger.info(f"Processing query: '{prompt_text[:100]}'... skip_rag={skip_rag}")
+    
     try:
-        if (
-            not skip_rag
-            and st.session_state.rag
-            and st.session_state.rag.get_document_count() > 0
-        ):
-            retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=3)
-            sources_used = [
-                c.get("source", "")
-                for c in retrieved_chunks
-                if c.get("source", "") not in ("", "unknown")
-            ]
-            if retrieved_chunks:
-                parts = [
-                    f"[Document {i} — Source: {c['source']} (relevance: {c['similarity']})]:\n{c['content']}"
-                    for i, c in enumerate(retrieved_chunks, 1)
+        if not skip_rag and st.session_state.rag:
+            doc_count = st.session_state.rag.get_document_count()
+            logger.info(f"RAG available with {doc_count} documents")
+            
+            if doc_count > 0:
+                logger.info(f"Retrieving chunks for: '{prompt_text[:100]}'")
+                retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=3)
+                logger.info(f"Retrieved {len(retrieved_chunks)} chunks")
+                
+                sources_used = [
+                    c.get("source", "")
+                    for c in retrieved_chunks
+                    if c.get("source", "") not in ("", "unknown")
+                ]
+                if retrieved_chunks:
+                    parts = [
+                        f"[Document {i} — Source: {c['source']} (relevance: {c['similarity']})]:\n{c['content']}"
+                        for i, c in enumerate(retrieved_chunks, 1)
                 ]
                 rag_context = "\n\n---\n\n".join(parts)
             _trace_rag(st.session_state.langfuse_tracer, prompt_text, retrieved_chunks)
@@ -1051,8 +1072,16 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # (RAG status caption intentionally hidden — uploads happen via the 📎 button
-    # next to the chat input.)
+    # RAG Status Display
+    if st.session_state.get("rag"):
+        doc_count = st.session_state.rag.get_document_count()
+        if doc_count > 0:
+            sources = st.session_state.rag.get_sources()
+            st.success(f"📚 **{doc_count}** document(s) indexed\n{chr(10).join([f'• {s}' for s in sources])}", icon="✓")
+        else:
+            st.info("📄 Upload documents to enhance responses", icon="ℹ")
+    else:
+        st.warning("⚠️ RAG system unavailable", icon="⚠")
 
     # New Chat
     if st.button("＋  New Chat", key="btn_new_chat", use_container_width=True):
