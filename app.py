@@ -389,7 +389,12 @@ def _process_pending_prompt() -> None:
             _trace_rag(st.session_state.get("langfuse_tracer"), prompt_text, retrieved_chunks)
     except Exception as exc:
         logger.error(f"❌ RAG error: {exc}", exc_info=True)
-        logger.error(f"RAG status: {st.session_state.rag.get_status() if st.session_state.rag else 'None'}")
+        # Safely try to get RAG status for diagnostics
+        try:
+            if st.session_state.rag and hasattr(st.session_state.rag, 'get_status'):
+                logger.error(f"RAG status: {st.session_state.rag.get_status()}")
+        except:
+            pass
         # If RAG fails with readonly/permission issues, mark it as unhealthy
         if st.session_state.rag and ("readonly" in str(exc).lower() or "permission" in str(exc).lower()):
             logger.warning("RAG marked unhealthy due to permission issues")
