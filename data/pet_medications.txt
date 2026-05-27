@@ -1,0 +1,72 @@
+# Pet Medications and Preventive Schedules: Vaccines, Deworming, and Parasite Control
+
+## Core vs. Non-Core Vaccines
+
+Vaccines are divided into "core" (recommended for all pets of that species due to severity or zoonotic risk) and "non-core" (recommended based on lifestyle and risk of exposure).
+
+### Dogs
+**Core Vaccines:**
+- **Rabies:** Required by law in most areas. Fatal and transmissible to humans.
+- **DAPP or DHPP (Distemper, Adenovirus/Hepatitis, Parainfluenza, Parvovirus):** Protects against severe, highly contagious, and often fatal viruses.
+
+**Non-Core Vaccines:**
+- **Bordetella (Kennel Cough):** Recommended if the dog goes to daycare, boarding, or dog parks.
+- **Leptospirosis:** Recommended if the dog has access to wildlife, woods, or standing water.
+- **Lyme Disease:** Recommended in areas where ticks carrying Lyme disease are prevalent.
+- **Canine Influenza:** Recommended for highly social dogs in outbreak areas.
+
+**Puppy Vaccine Schedule:**
+- Starts at 6-8 weeks of age.
+- Boosters given every 3-4 weeks until the puppy is 16-20 weeks old.
+- Rabies is typically given at 12-16 weeks.
+- Adult dogs need boosters every 1 to 3 years depending on the vaccine type and local laws.
+
+### Cats
+**Core Vaccines:**
+- **Rabies:** Essential for all cats, even indoor-only cats, as bats or other rabid animals can enter homes.
+- **FVRCP (Feline Viral Rhinotracheitis, Calicivirus, Panleukopenia):** Protects against severe upper respiratory infections and feline distemper.
+
+**Non-Core Vaccines:**
+- **FeLV (Feline Leukemia Virus):** Highly recommended for kittens (often considered core for them) and any adult cat that spends time outdoors or lives with a FeLV-positive cat.
+
+**Kitten Vaccine Schedule:**
+- Starts at 6-8 weeks of age.
+- Boosters given every 3-4 weeks until 16 weeks old.
+- Rabies given at 12-16 weeks.
+
+## Deworming Schedule
+
+Intestinal parasites (roundworms, hookworms, whipworms, tapeworms) are very common, especially in puppies and kittens.
+
+- **Puppies and Kittens:** Should be dewormed starting at 2 weeks of age, and repeated every 2 weeks until they are on a broad-spectrum monthly preventive.
+- **Adult Pets:** A broad-spectrum monthly heartworm preventive typically includes deworming medication for intestinal parasites.
+- **Fecal Exams:** You should bring a stool sample to the vet 1-2 times a year to check for parasites that standard dewormers might miss (like Giardia or Coccidia).
+
+## Flea and Tick Prevention
+
+Fleas cause intense itching, skin infections, and can transmit tapeworms. Ticks can transmit severe diseases like Lyme disease, Anaplasmosis, and Ehrlichiosis.
+
+- **Year-Round Prevention:** It is highly recommended to use flea and tick prevention year-round, even in winter, as parasites can survive in mild weather and indoors.
+- **Options:** Available as topical liquids (applied to the back of the neck), oral chewables, or specialized collars (like Seresto).
+- **WARNING:** NEVER use a dog flea/tick product on a cat. Many dog products contain permethrin, which is highly toxic and often fatal to cats.
+
+## Heartworm Prevention
+
+Heartworm disease is a severe and potentially fatal condition caused by parasitic worms living in the heart and pulmonary arteries. It is transmitted by mosquitoes.
+
+- **Risk:** Dogs are highly susceptible. Cats can also get heartworms, and it is often more difficult to diagnose and treat in cats.
+- **Prevention:** Much safer and cheaper than treatment. Heartworm prevention is typically given as a monthly oral chewable or a topical liquid. Injectable options lasting 6-12 months are also available for dogs.
+- **Testing:** Dogs must be tested for heartworms before starting prevention (and annually thereafter), as giving prevention to a dog with an active infection can cause severe complications.
+
+## Safe vs. Unsafe OTC Medications
+
+Never give your pet over-the-counter human medication without explicitly consulting your veterinarian.
+
+**Highly Toxic (DO NOT GIVE):**
+- **Ibuprofen (Advil, Motrin) and Naproxen (Aleve):** Highly toxic to dogs and cats; causes stomach ulcers and kidney failure.
+- **Acetaminophen (Tylenol):** Fatal to cats even in tiny doses (destroys red blood cells). Very dangerous to dogs.
+- **Aspirin:** Can cause severe GI bleeding. Only use under strict veterinary supervision.
+
+**Potentially Safe (Consult Vet First):**
+- **Benadryl (Diphenhydramine):** Sometimes used for allergic reactions, but the correct dosage is crucial.
+- **Plain canned pumpkin (not pie filling):** Often recommended for mild diarrhea or constipation.

@@ -1,0 +1,52 @@
+# Pet Health Guide: Common Illnesses, Symptoms, and Preventive Care
+
+## Common Illnesses and Symptoms by Species
+
+### Dogs
+- **Canine Parvovirus (Parvo):** A highly contagious viral illness that affects dogs, particularly puppies. Symptoms include severe bloody diarrhea, lethargy, anorexia, fever, and vomiting. Parvo can be fatal if untreated.
+- **Canine Distemper:** A virus that affects the respiratory, gastrointestinal, and central nervous systems. Symptoms include high fever, eye and nose discharge, coughing, vomiting, diarrhea, seizures, and paralysis.
+- **Gastric Dilatation-Volvulus (Bloat):** A life-threatening emergency where the stomach fills with gas and twists. Symptoms include a swollen/distended abdomen, unproductive retching, restlessness, and excessive drooling.
+- **Canine Cough (Kennel Cough):** A highly contagious respiratory disease. The most common symptom is a harsh, dry, hacking cough (often described as a "goose honk").
+
+### Cats
+- **Feline Leukemia Virus (FeLV):** A retrovirus that impairs the cat's immune system, causing various health issues. Symptoms include weight loss, poor coat condition, enlarged lymph nodes, persistent fever, and pale gums.
+- **Feline Immunodeficiency Virus (FIV):** Similar to HIV in humans, it attacks the immune system. Symptoms include poor coat, poor appetite, fever, and persistent infections in the mouth, skin, or respiratory tract.
+- **Feline Lower Urinary Tract Disease (FLUTD):** A common issue in cats. Symptoms include straining to urinate, crying while urinating, urinating outside the litter box, and blood in the urine. Male cats are especially prone to fatal urinary blockages.
+- **Upper Respiratory Infections (URI):** Extremely common, especially in shelter cats. Symptoms include sneezing, nasal and eye discharge, fever, and loss of appetite.
+
+### Rabbits
+- **Gastrointestinal (GI) Stasis:** A potentially fatal condition where the digestive system slows down or stops. Symptoms include a sudden decrease in appetite, very small or no fecal pellets, lethargy, and a hunched posture indicating abdominal pain.
+- **Snuffles (Pasteurellosis):** A bacterial respiratory infection. Symptoms include sneezing, nasal and ocular discharge, and matted fur on the front paws from wiping their face.
+
+### Birds
+- **Psittacosis (Parrot Fever):** A bacterial infection. Symptoms include lethargy, loss of appetite, ruffled feathers, eye and nasal discharge, and diarrhea.
+- **Egg Binding:** A life-threatening condition where a female bird cannot pass an egg. Symptoms include sitting at the bottom of the cage, straining, fluffed feathers, and heavy breathing.
+
+## When to Seek Emergency Vet Care
+
+Do not wait to see a vet if your pet experiences any of the following:
+
+- Difficulty breathing or choking.
+- Unconsciousness or severe lethargy.
+- Sudden collapse or inability to stand.
+- Seizures or sudden neurological signs (e.g., circling, head pressing).
+- Bleeding that does not stop after 5 minutes of pressure.
+- Suspected poisoning (e.g., eating chocolate, xylitol, grapes, rat poison, antifreeze).
+- Unproductive retching or a visibly swollen abdomen (especially in dogs).
+- Straining or inability to urinate (especially in male cats).
+- Extreme pain (crying out, shaking, refusing to move).
+- Persistent vomiting or diarrhea (more than 24 hours, or containing blood).
+- Sudden paralysis of the hind legs.
+- Eye injuries or sudden blindness.
+
+## Preventive Care Schedule
+
+Preventive care is essential for maintaining your pet's health and catching potential issues early.
+
+- **Annual Exams:** All adult pets should see a veterinarian at least once a year for a comprehensive physical exam.
+- **Senior Exams:** Senior pets (usually over 7 years of age for dogs and cats) should have bi-annual (twice a year) exams, including bloodwork and urinalysis.
+- **Dental Care:** Dental disease is incredibly common. Have your pet's teeth checked annually and schedule professional cleanings as recommended by your vet. Brush your pet's teeth regularly at home.
+- **Weight Management:** Keep your pet at a healthy weight to prevent arthritis, diabetes, and heart disease. Monitor their body condition score regularly.
+- **Grooming:** Regular brushing helps distribute natural oils, prevents matting, and allows you to check for lumps, bumps, or parasites.
+
+Always consult your veterinarian for specific health advice tailored to your individual pet.

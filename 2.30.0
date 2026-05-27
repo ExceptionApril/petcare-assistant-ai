@@ -1,0 +1,63 @@
+WARNING: Ignoring invalid distribution ~treamlit (C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages)
+Collecting langfuse
+  Using cached langfuse-4.6.1-py3-none-any.whl.metadata (2.1 kB)
+Requirement already satisfied: httpx<1.0,>=0.15.4 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from langfuse) (0.28.1)
+Requirement already satisfied: pydantic<3,>=2 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from langfuse) (2.12.5)
+Collecting backoff>=1.10.0 (from langfuse)
+  Using cached backoff-2.2.1-py3-none-any.whl.metadata (14 kB)
+Collecting wrapt<2,>=1.14 (from langfuse)
+  Using cached wrapt-1.17.3-cp314-cp314-win_amd64.whl.metadata (6.5 kB)
+Requirement already satisfied: packaging<27.0,>=23.2 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from langfuse) (26.0)
+Collecting opentelemetry-api<2,>=1.33.1 (from langfuse)
+  Using cached opentelemetry_api-1.41.1-py3-none-any.whl.metadata (1.5 kB)
+Collecting opentelemetry-sdk<2,>=1.33.1 (from langfuse)
+  Using cached opentelemetry_sdk-1.41.1-py3-none-any.whl.metadata (1.7 kB)
+Collecting opentelemetry-exporter-otlp-proto-http<2,>=1.33.1 (from langfuse)
+  Using cached opentelemetry_exporter_otlp_proto_http-1.41.1-py3-none-any.whl.metadata (2.5 kB)
+Requirement already satisfied: anyio in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from httpx<1.0,>=0.15.4->langfuse) (4.12.1)
+Requirement already satisfied: certifi in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from httpx<1.0,>=0.15.4->langfuse) (2026.2.25)
+Requirement already satisfied: httpcore==1.* in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from httpx<1.0,>=0.15.4->langfuse) (1.0.9)
+Requirement already satisfied: idna in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from httpx<1.0,>=0.15.4->langfuse) (3.11)
+Requirement already satisfied: h11>=0.16 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from httpcore==1.*->httpx<1.0,>=0.15.4->langfuse) (0.16.0)
+Collecting importlib-metadata<8.8.0,>=6.0 (from opentelemetry-api<2,>=1.33.1->langfuse)
+  Using cached importlib_metadata-8.7.1-py3-none-any.whl.metadata (4.7 kB)
+Requirement already satisfied: typing-extensions>=4.5.0 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from opentelemetry-api<2,>=1.33.1->langfuse) (4.15.0)
+Collecting zipp>=3.20 (from importlib-metadata<8.8.0,>=6.0->opentelemetry-api<2,>=1.33.1->langfuse)
+  Using cached zipp-3.23.1-py3-none-any.whl.metadata (3.6 kB)
+Requirement already satisfied: googleapis-common-protos~=1.52 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from opentelemetry-exporter-otlp-proto-http<2,>=1.33.1->langfuse) (1.72.0)
+Collecting opentelemetry-exporter-otlp-proto-common==1.41.1 (from opentelemetry-exporter-otlp-proto-http<2,>=1.33.1->langfuse)
+  Using cached opentelemetry_exporter_otlp_proto_common-1.41.1-py3-none-any.whl.metadata (1.9 kB)
+Collecting opentelemetry-proto==1.41.1 (from opentelemetry-exporter-otlp-proto-http<2,>=1.33.1->langfuse)
+  Using cached opentelemetry_proto-1.41.1-py3-none-any.whl.metadata (2.4 kB)
+Requirement already satisfied: requests~=2.7 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from opentelemetry-exporter-otlp-proto-http<2,>=1.33.1->langfuse) (2.32.5)
+Requirement already satisfied: protobuf<7.0,>=5.0 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from opentelemetry-proto==1.41.1->opentelemetry-exporter-otlp-proto-http<2,>=1.33.1->langfuse) (5.29.6)
+Collecting opentelemetry-semantic-conventions==0.62b1 (from opentelemetry-sdk<2,>=1.33.1->langfuse)
+  Using cached opentelemetry_semantic_conventions-0.62b1-py3-none-any.whl.metadata (2.5 kB)
+Requirement already satisfied: annotated-types>=0.6.0 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from pydantic<3,>=2->langfuse) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.5 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from pydantic<3,>=2->langfuse) (2.41.5)
+Requirement already satisfied: typing-inspection>=0.4.2 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from pydantic<3,>=2->langfuse) (0.4.2)
+Requirement already satisfied: charset_normalizer<4,>=2 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from requests~=2.7->opentelemetry-exporter-otlp-proto-http<2,>=1.33.1->langfuse) (3.4.5)
+Requirement already satisfied: urllib3<3,>=1.21.1 in C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages (from requests~=2.7->opentelemetry-exporter-otlp-proto-http<2,>=1.33.1->langfuse) (2.6.3)
+Using cached langfuse-4.6.1-py3-none-any.whl (481 kB)
+Using cached opentelemetry_api-1.41.1-py3-none-any.whl (69 kB)
+Using cached importlib_metadata-8.7.1-py3-none-any.whl (27 kB)
+Using cached opentelemetry_exporter_otlp_proto_http-1.41.1-py3-none-any.whl (22 kB)
+Using cached opentelemetry_exporter_otlp_proto_common-1.41.1-py3-none-any.whl (18 kB)
+Using cached opentelemetry_proto-1.41.1-py3-none-any.whl (72 kB)
+Using cached opentelemetry_sdk-1.41.1-py3-none-any.whl (180 kB)
+Using cached opentelemetry_semantic_conventions-0.62b1-py3-none-any.whl (231 kB)
+Using cached wrapt-1.17.3-cp314-cp314-win_amd64.whl (39 kB)
+Using cached backoff-2.2.1-py3-none-any.whl (15 kB)
+Using cached zipp-3.23.1-py3-none-any.whl (10 kB)
+WARNING: Ignoring invalid distribution ~treamlit (C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages)
+Installing collected packages: zipp, wrapt, opentelemetry-proto, backoff, opentelemetry-exporter-otlp-proto-common, importlib-metadata, opentelemetry-api, opentelemetry-semantic-conventions, opentelemetry-sdk, opentelemetry-exporter-otlp-proto-http, langfuse
+  Attempting uninstall: wrapt
+    Found existing installation: wrapt 2.1.2
+    Uninstalling wrapt-2.1.2:
+      Successfully uninstalled wrapt-2.1.2
+
+WARNING: Ignoring invalid distribution ~treamlit (C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages)
+Successfully installed backoff-2.2.1 importlib-metadata-8.7.1 langfuse-4.6.1 opentelemetry-api-1.41.1 opentelemetry-exporter-otlp-proto-common-1.41.1 opentelemetry-exporter-otlp-proto-http-1.41.1 opentelemetry-proto-1.41.1 opentelemetry-sdk-1.41.1 opentelemetry-semantic-conventions-0.62b1 wrapt-1.17.3 zipp-3.23.1
+
+[notice] A new release of pip is available: 26.0.1 -> 26.1.1
+[notice] To update, run: C:\Users\April John\AppData\Local\Python\pythoncore-3.14-64\python.exe -m pip install --upgrade pip
