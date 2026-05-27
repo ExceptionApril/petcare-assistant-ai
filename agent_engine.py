@@ -42,11 +42,23 @@ class ReActAgent:
 
         # Keywords used to validate pet-care relevance
         self._pet_keywords = {
-            "pet", "dog", "cat", "puppy", "kitten", "veterinarian", "vet", "feeding",
-            "nutrition", "groom", "grooming", "training", "behavior", "vaccin", "vaccine",
-            "neuter", "spay", "walk", "leash", "litter", "litterbox", "medication",
-            "diet", "treat", "treats", "kibble", "wet food", "dry food", "oral", "heartworm",
-            "parasite", "flea", "tick", "rabies", "microchip", "breed", "breeding", "clinic"
+            "pet", "pets", "dog", "dogs", "cat", "cats", "puppy", "puppies",
+            "kitten", "kittens", "veterinarian", "vet", "feeding", "feed",
+            "nutrition", "groom", "grooming", "training", "train",
+            "behavior", "behaviour", "vaccin", "vaccine", "vaccination",
+            "neuter", "spay", "walk", "walking", "leash", "litter", "litterbox",
+            "medication", "medicine", "diet", "treat", "treats", "kibble",
+            "wet food", "dry food", "oral", "heartworm", "parasite", "flea",
+            "tick", "rabies", "microchip", "breed", "breeding", "clinic",
+            "animal", "bird", "fish", "rabbit", "hamster", "reptile",
+            "turtle", "parrot", "guinea pig", "ferret", "snake",
+            "aquarium", "cage", "crate", "collar", "harness",
+            "paw", "fur", "coat", "tail", "whisker",
+            "meow", "bark", "purr", "wag",
+            "adoption", "adopt", "rescue", "shelter",
+            "health", "healthy", "sick", "illness", "symptom",
+            "care", "warning", "emergency", "poison", "toxic",
+            "name", "my pet", "my cat", "my dog", "my puppy", "my kitten",
         }
     
     def call_llm_with_fallback(self, messages: list, max_tokens: int = 1200, temperature: float = 0.7) -> tuple:
@@ -249,18 +261,24 @@ Instructions: Use the above documents to answer the user's question. If document
         )
 
         # Post-response safety: ensure answer is about pet care and not an injection
-        def is_petcare_related(text: str) -> bool:
+        # If RAG context was provided, the user is asking about their own documents — don't block.
+        def is_petcare_related(text: str, question: str) -> bool:
             if not text or not text.strip():
                 return False
             low = text.lower()
+            q_low = question.lower()
             # If it explicitly asks to ignore system prompt or to act outside role, block
             for p in _INJECTION_PATTERNS:
                 if p in low:
                     return False
-            # Must contain at least one pet keyword
-            return any(k in low for k in self._pet_keywords)
+            # Pass if EITHER the answer or the question contains a pet keyword
+            return (any(k in low for k in self._pet_keywords) or
+                    any(k in q_low for k in self._pet_keywords))
 
-        if not is_petcare_related(answer):
+        if rag_context:
+            # RAG context means user is querying their uploaded documents — always allow
+            pass
+        elif not is_petcare_related(answer, user_message):
             logger.warning("Blocked non-petcare or injected response")
             agent_steps.append({
                 "iteration": 1,
@@ -434,14 +452,16 @@ Instructions: Use the above documents to answer the user's question. If document
             return
 
         # Post-response safety check
-        low = full_answer.lower()
-        injection_caught = any(p in low for p in _INJECTION_PATTERNS)
-        has_pet_keyword = any(k in low for k in self._pet_keywords)
-        question_has_pet_keyword = any(k in user_message.lower() for k in self._pet_keywords)
-        if injection_caught or (not has_pet_keyword and not question_has_pet_keyword):
-            logger.warning("Blocked non-petcare streaming response")
-            yield ("done", agent_steps)
-            return
+        # If RAG context was provided, user is querying their documents — don't block.
+        if not rag_context:
+            low = full_answer.lower()
+            injection_caught = any(p in low for p in _INJECTION_PATTERNS)
+            has_pet_keyword = any(k in low for k in self._pet_keywords)
+            question_has_pet_keyword = any(k in user_message.lower() for k in self._pet_keywords)
+            if injection_caught or (not has_pet_keyword and not question_has_pet_keyword):
+                logger.warning("Blocked non-petcare streaming response")
+                yield ("done", agent_steps)
+                return
 
         agent_steps.append({
             "iteration": len(agent_steps) + 1,

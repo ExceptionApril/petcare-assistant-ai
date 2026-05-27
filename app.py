@@ -74,41 +74,6 @@ def _fmt_friendly_time(dt) -> str:
         return f"{d} days ago"
 
 
-_MEMORY_TRIGGERS = (
-    "recall",
-    "remember",
-    "what did i",
-    "what was",
-    "what's my",
-    "whats my",
-    "what is my",
-    "do you remember",
-    "did i tell you",
-    "i told you",
-    "my name is",
-    "my cat's name",
-    "my cats name",
-    "my dog's name",
-    "my dogs name",
-    "name of my",
-    "the name of my",
-    "earlier i said",
-    "you said earlier",
-    "previous",
-)
-
-
-def _is_memory_question(message: str) -> bool:
-    """True when the user is asking the assistant to recall something from
-    the conversation itself, not a knowledge question about pet care.
-
-    Used to bypass RAG so document chunks don't get injected and steer the
-    LLM away from answering the actual recall question.
-    """
-    if not message:
-        return False
-    low = message.lower()
-    return any(trigger in low for trigger in _MEMORY_TRIGGERS)
 
 
 def _is_injection(message: str) -> bool:
@@ -388,19 +353,14 @@ def _process_pending_prompt() -> None:
         st.rerun()
         return
 
-    # RAG retrieval — only when the prompt looks like a knowledge question.
-    # Personal/memory prompts ("remember my cat's name?") get cat.pdf as a top
-    # match purely on token overlap, which drags the LLM off-task. Skip RAG
-    # for those, and apply a similarity threshold for everything else so
-    # irrelevant chunks aren't surfaced as "sources".
     rag_context = ""
     sources_used: list[str] = []
-    skip_rag = _is_memory_question(prompt_text)
+    retrieved_chunks: list[dict] = []
     
-    logger.info(f"Processing query: '{prompt_text[:100]}'... skip_rag={skip_rag}")
+    logger.info(f"Processing query: '{prompt_text[:100]}'")
     
     try:
-        if not skip_rag and st.session_state.rag:
+        if st.session_state.rag:
             doc_count = st.session_state.rag.get_document_count()
             logger.info(f"RAG available with {doc_count} documents")
             
