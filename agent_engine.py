@@ -99,22 +99,22 @@ class ReActAgent:
 
     @staticmethod
     def web_search(query: str, max_results: int = 3) -> str:
-        """Search the web using DuckDuckGo (free, no API key)."""
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
-
-            if not results:
+        """Search the web using DuckDuckGo (free, no API key). Tries multiple backends."""
+        backends = ["auto", "html", "lite"]
+        for backend in backends:
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=max_results, backend=backend))
+                if results:
+                    return "\n".join([
+                        f"- {r['title']}: {ReActAgent._sanitize_search_result(r.get('body', ''))}"
+                        for r in results
+                    ])
                 return "No search results found."
-
-            formatted_results = "\n".join([
-                f"- {r['title']}: {ReActAgent._sanitize_search_result(r.get('body', ''))}"
-                for r in results
-            ])
-            return formatted_results
-        except Exception as e:
-            logger.error(f"Web search error: {e}")
-            return f"Search failed: {str(e)}"
+            except Exception as e:
+                logger.warning(f"Web search backend '{backend}' failed: {e}. Trying next...")
+        logger.error("All DuckDuckGo backends failed.")
+        return "Web search is temporarily unavailable. Please try again later."
     
     def should_search(self, user_message: str) -> bool:
         """Only trigger web search for explicit live-data or search requests."""
@@ -344,9 +344,9 @@ Instructions: Use the above documents to answer the user's question. If document
             return
 
         # Run reasoning loop to collect web-search context (non-streaming).
-        # Skip entirely when RAG context is present — documents already provide context.
+        # Web search and RAG are independent — run both if triggered.
         search_context = user_message
-        if use_reasoning and self.should_search(user_message) and not rag_context.strip():
+        if use_reasoning and self.should_search(user_message):
             for iteration in range(2):
                 thought_messages = [
                     {"role": "system", "content": system_prompt},
