@@ -593,8 +593,11 @@ if not st.session_state.get("rag"):
     try:
         from rag_engine import RAGEngine
         st.session_state.rag = RAGEngine()
+        doc_count = st.session_state.rag.get_document_count() if st.session_state.rag else 0
+        logger.info(f"✅ RAG initialized with {doc_count} documents")
     except Exception as exc:
         logger.exception("RAG initialization failed")
+        logger.error(f"CRITICAL: RAG init error: {exc}")
         st.error(f"❌ Failed to initialize RAG: {exc}")
         st.session_state.rag = None
 

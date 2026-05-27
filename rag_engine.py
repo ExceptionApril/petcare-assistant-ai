@@ -41,8 +41,9 @@ COLLECTION_NAME = "petcare_docs"
 CHUNK_SIZE      = 300    # smaller chunks = more focused semantic match
 CHUNK_OVERLAP   = 40
 TOP_K           = 5      # retrieve more candidates since chunks are smaller
-MIN_SIMILARITY  = 0.1    # Only include chunks with at least 10% similarity
-                          # (excludes noise, keeps contextually relevant documents)
+MIN_SIMILARITY  = -0.1   # More permissive: include even weakly-relevant chunks
+                          # Only filter strongly anti-correlated content
+                          # Higher threshold was blocking valid documents
 
 
 class RAGEngine:
@@ -205,7 +206,8 @@ class RAGEngine:
     # ── Retrieval ──────────────────────────────────────────────────────────────
 
     def retrieve(self, query: str, k: int = TOP_K, min_similarity: float = MIN_SIMILARITY) -> list:
-        """Return top-k chunks for the query, filtered by similarity threshold."""
+        """Return top-k chunks for the query, filtered by similarity threshold.
+        Falls back to returning all candidates if none meet threshold (better than empty)."""
         if not self.collection:
             logger.warning("RAG collection not available")
             return []
@@ -221,6 +223,7 @@ class RAGEngine:
                 include=["documents", "metadatas", "distances"],
             )
             chunks = []
+            all_chunks = []  # Keep all for fallback
             for doc, meta, dist in zip(
                 results["documents"][0],
                 results["metadatas"][0],
@@ -228,14 +231,22 @@ class RAGEngine:
             ):
                 similarity = round(1 - dist, 3)
                 logger.debug("Chunk from '%s' similarity=%.3f", meta.get("source", "?"), similarity)
-                if similarity < min_similarity:
-                    continue
-                chunks.append({
+                chunk_obj = {
                     "content": doc,
                     "source": meta.get("source", ""),
                     "similarity": similarity,
-                })
-            logger.info("Retrieved %d chunks (of %d candidates) for query '%s'", len(chunks), n, query[:80])
+                }
+                all_chunks.append(chunk_obj)
+                if similarity >= min_similarity:
+                    chunks.append(chunk_obj)
+            
+            # Fallback: if no chunks meet threshold but we have candidates, return top 2
+            if not chunks and all_chunks:
+                logger.info("No chunks met similarity threshold (%.3f) - using best matches", min_similarity)
+                chunks = all_chunks[:2]
+            
+            logger.info("Retrieved %d chunks (of %d candidates, threshold=%.3f) for query '%s'", 
+                       len(chunks), n, min_similarity, query[:80])
             return chunks
         except Exception as exc:
             logger.error("Retrieval error: %s", exc, exc_info=True)
