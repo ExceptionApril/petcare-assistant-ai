@@ -342,7 +342,7 @@ def _submit_chat_prompt(prompt_text: str) -> None:
     # Rate limiting — check before doing anything else
     from core.security import rate_limit_check
     if not rate_limit_check(st.session_state, st.session_state.session_id, limit_per_minute=20):
-        st.toast("⚠️ You're sending messages too fast. Please wait a moment.", icon="⚠️")
+        st.toast("⚠️ You're sending messages too fast. Please wait a moment.")
         return
 
     if _is_injection(prompt_text):
@@ -1077,11 +1077,11 @@ with st.sidebar:
         doc_count = st.session_state.rag.get_document_count()
         if doc_count > 0:
             sources = st.session_state.rag.get_sources()
-            st.success(f"📚 **{doc_count}** document(s) indexed\n{chr(10).join([f'• {s}' for s in sources])}", icon="✓")
+            st.success(f"📚 **{doc_count}** document(s) indexed\n{chr(10).join([f'• {s}' for s in sources])}")
         else:
-            st.info("📄 Upload documents to enhance responses", icon="ℹ")
+            st.info("📄 Upload documents to enhance responses")
     else:
-        st.warning("⚠️ RAG system unavailable", icon="⚠")
+        st.warning("⚠️ RAG system unavailable")
 
     # New Chat
     if st.button("＋  New Chat", key="btn_new_chat", use_container_width=True):
