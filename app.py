@@ -292,9 +292,8 @@ def _handle_document_upload(uploaded_file) -> None:
             sources = st.session_state.rag.get_sources()
             
             logger.info(f"Upload result: {chunks_added} chunks, total docs: {doc_count}, sources: {sources}")
-            
             _trace_rag(
-                st.session_state.langfuse_tracer,
+                st.session_state.get("langfuse_tracer"),
                 f"Document upload: {uploaded_file.name}",
                 [{"text": f"Ingested {chunks_added} chunks", "source": uploaded_file.name}],
             )
@@ -380,7 +379,7 @@ def _process_pending_prompt() -> None:
                         for i, c in enumerate(retrieved_chunks, 1)
                     ]
                     rag_context = "\n\n---\n\n".join(parts)
-            _trace_rag(st.session_state.langfuse_tracer, prompt_text, retrieved_chunks)
+            _trace_rag(st.session_state.get("langfuse_tracer"), prompt_text, retrieved_chunks)
     except Exception as exc:
         logger.error("RAG error: %s", exc)
         # If RAG fails with readonly/permission issues, mark it as unhealthy
@@ -474,15 +473,15 @@ def _process_pending_prompt() -> None:
         )
 
     _trace_llm(
-        st.session_state.langfuse_tracer,
+        st.session_state.get("langfuse_tracer"),
         user_input=prompt_text,
         response_text=full_response,
         tokens_used=len(prompt_text.split()) + len(full_response.split()),
     )
-    _trace_agent_steps(st.session_state.langfuse_tracer, agent_steps)
+    _trace_agent_steps(st.session_state.get("langfuse_tracer"), agent_steps)
     # Flush so Streamlit reruns don't drop buffered traces
-    if st.session_state.langfuse_tracer:
-        st.session_state.langfuse_tracer.flush()
+    if st.session_state.get("langfuse_tracer"):
+        st.session_state.get("langfuse_tracer").flush()
 
     st.session_state.token_count += len(prompt_text.split()) + len(full_response.split())
     st.session_state.messages.append({
