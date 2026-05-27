@@ -300,6 +300,7 @@ def _handle_document_upload(uploaded_file) -> None:
             
             if chunks_added > 0:
                 logger.info(f"Document successfully indexed: {uploaded_file.name}")
+                st.toast(f"Document indexed: {uploaded_file.name} ({chunks_added} chunks)", icon="📚")
             else:
                 st.warning(f"⚠️ No content extracted from {uploaded_file.name}")
     except Exception as exc:
@@ -365,7 +366,7 @@ def _process_pending_prompt() -> None:
             
             if doc_count > 0:
                 logger.info(f"Retrieving chunks for: '{prompt_text[:100]}'")
-                retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=3)
+                retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=5)
                 logger.info(f"Retrieved {len(retrieved_chunks)} chunks")
                 
                 sources_used = [

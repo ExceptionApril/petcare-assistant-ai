@@ -31,7 +31,7 @@ You are an expert pet care assistant powered by advanced AI tools. Use the follo
     if use_rag:
         additional_context += """
 KNOWLEDGE GROUNDING:
-When the user's message includes a "RELEVANT DOCUMENTS" section below, treat it as the authoritative source for your answer. Quote or paraphrase those documents, cite their source filename, and only fall back to general pet-care knowledge if the documents don't cover the topic.
+When this prompt includes a "RELEVANT DOCUMENTS" section, treat those documents as the authoritative source for your answer. Quote or paraphrase them, cite their source filename, and only fall back to general pet-care knowledge if the documents don't cover the topic.
 """
 
     if use_agent:

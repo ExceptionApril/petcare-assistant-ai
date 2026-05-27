@@ -3,7 +3,13 @@
 End-to-end test of document upload and RAG retrieval workflow.
 Tests: 1. Upload a test document, 2. Verify it's stored, 3. Retrieve and verify results
 """
+import sys
 import os
+
+# Ensure UTF-8 output on Windows (avoids UnicodeEncodeError for non-ASCII chars)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 from rag_engine import RAGEngine
 
 print("=" * 70)
@@ -81,7 +87,7 @@ test_queries = [
 retrieval_results = {}
 for query in test_queries:
     try:
-        chunks = rag.retrieve(query, k=2, min_similarity=0)
+        chunks = rag.retrieve(query, k=2)
         retrieval_results[query] = {
             "success": True,
             "chunks_found": len(chunks),

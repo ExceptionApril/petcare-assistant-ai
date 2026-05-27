@@ -38,10 +38,11 @@ def _resolve_chroma_path() -> str:
 
 CHROMA_PATH     = _resolve_chroma_path()
 COLLECTION_NAME = "petcare_docs"
-CHUNK_SIZE      = 500
-CHUNK_OVERLAP   = 50
-TOP_K           = 3
-MIN_SIMILARITY  = 0.10   # lowered so more relevant chunks pass through
+CHUNK_SIZE      = 300    # smaller chunks = more focused semantic match
+CHUNK_OVERLAP   = 40
+TOP_K           = 5      # retrieve more candidates since chunks are smaller
+MIN_SIMILARITY  = -0.2   # include weakly-relevant chunks (near-zero cosine similarity);
+                          # only filter strongly anti-correlated content (< -0.2)
 
 
 class RAGEngine:
