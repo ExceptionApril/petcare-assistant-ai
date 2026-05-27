@@ -27,28 +27,38 @@ class Config:
     def __init__(self):
         """Load configuration from environment (.env or system env vars)."""
         load_dotenv()
-        
-        # Required: OpenRouter API Key
-        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-        if not self.openrouter_api_key:
-            raise EnvironmentError("Missing required: OPENROUTER_API_KEY")
-        
+
+        def _clean(name: str, default: str = "") -> str:
+            # Strip whitespace AND surrounding quote chars — Streamlit Cloud's
+            # TOML paste box occasionally leaves embedded quotes in the value.
+            return os.getenv(name, default).strip().strip('"').strip("'").strip()
+
+        # Required: OpenRouter API Key. Do NOT raise here — the UI surfaces
+        # the missing-key state inline so the user can fix Streamlit secrets
+        # without the whole app crashing.
+        self.openrouter_api_key = _clean("OPENROUTER_API_KEY")
+
         # OpenRouter configuration
-        self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
-        self.openrouter_model = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()
+        self.openrouter_base_url = _clean("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        self.openrouter_model = _clean("OPENROUTER_MODEL", "openai/gpt-oss-120b:free")
         
         # RAG configuration
-        self.chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db").strip()
-        self.rag_top_k = int(os.getenv("RAG_TOP_K", "3"))
-        
+        self.chroma_db_path = _clean("CHROMA_DB_PATH", "./chroma_db")
+        self.rag_top_k = int(_clean("RAG_TOP_K", "3") or "3")
+
         # Langfuse configuration (optional)
-        self.langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
-        self.langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
-        self.langfuse_base_url = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com").strip()
-        
+        self.langfuse_secret_key = _clean("LANGFUSE_SECRET_KEY")
+        self.langfuse_public_key = _clean("LANGFUSE_PUBLIC_KEY")
+        self.langfuse_base_url = _clean("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+
         # Security configuration
-        self.max_input_chars = int(os.getenv("MAX_INPUT_CHARS", "4000"))
-        self.rate_limit_per_minute = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
+        self.max_input_chars = int(_clean("MAX_INPUT_CHARS", "4000") or "4000")
+        self.rate_limit_per_minute = int(_clean("RATE_LIMIT_PER_MINUTE", "20") or "20")
+
+    def is_openrouter_configured(self) -> bool:
+        """True only if a non-placeholder API key is set."""
+        k = self.openrouter_api_key
+        return bool(k) and "REPLACE_ME" not in k and "YOUR_KEY" not in k
     
     def is_langfuse_enabled(self) -> bool:
         """Check if Langfuse tracing is configured."""

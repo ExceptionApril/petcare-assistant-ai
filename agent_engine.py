@@ -415,9 +415,20 @@ Instructions: Use the above documents to answer the user's question. If document
                 yield ("chunk", text)
             except Exception as final_exc:
                 logger.error(f"Both streaming and non-streaming failed: {final_exc}")
+                # Surface the real error class + short message so the deployer
+                # can tell auth issues from rate-limit issues from missing models.
+                err_label = type(final_exc).__name__
+                err_msg = str(final_exc)[:240]
+                hint = ""
+                low = err_msg.lower()
+                if "401" in err_msg or "auth" in low or "invalid api key" in low:
+                    hint = " (OPENROUTER_API_KEY is missing or invalid — check Streamlit Cloud → Settings → Secrets.)"
+                elif "429" in err_msg or "rate" in low or "quota" in low:
+                    hint = " (Free-tier rate limit hit — try again in a minute or switch OPENROUTER_MODEL.)"
+                elif "404" in err_msg or "not found" in low or "no allowed providers" in low:
+                    hint = " (Model unavailable on your OpenRouter account — change OPENROUTER_MODEL in Secrets.)"
                 yield ("chunk", (
-                    "I'm having trouble connecting to the AI service right now. "
-                    "Please check your API key or try again in a moment."
+                    f"⚠️ AI service unreachable: **{err_label}** — {err_msg}.{hint}"
                 ))
             yield ("done", agent_steps)
             return

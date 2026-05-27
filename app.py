@@ -498,6 +498,15 @@ if not st.session_state.get("agent"):
         config = Config()
         st.session_state.agent_config = config
 
+        # Show an immediate, actionable banner if the key is missing —
+        # otherwise the user only sees the generic chat error.
+        if not config.is_openrouter_configured():
+            st.error(
+                "🔑 **OPENROUTER_API_KEY is not configured.** "
+                "On Streamlit Cloud: open *Manage app → Settings → Secrets* and paste a real key "
+                "(get one free at https://openrouter.ai/keys). On local dev: set it in `.env`."
+            )
+
         system_prompt = build_system_prompt(
             pet_type="Unknown",
             pet_age="Unknown",
