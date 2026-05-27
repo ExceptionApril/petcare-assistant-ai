@@ -1,71 +1,33 @@
 """Agentic AI using ReAct-style reasoning loop with web search."""
 import re
 import os
-import warnings
 from duckduckgo_search import DDGS
 import logging
 
 logger = logging.getLogger(__name__)
 
-# ── LANGFUSE SETUP ────────────────────────────────────────────
-warnings.filterwarnings("ignore")
-
-LANGFUSE_ENABLED = False
-langfuse_client = None
-
-try:
-    from core.config import Config
-
-    config = Config()
-    if config.is_langfuse_enabled():
-        from langfuse import Langfuse
-
-        langfuse_client = Langfuse(
-            secret_key=config.langfuse_secret_key,
-            public_key=config.langfuse_public_key,
-            host=config.langfuse_base_url
-        )
-        LANGFUSE_ENABLED = True
-        logger.info("Langfuse tracing initialized")
-    else:
-        logger.info("Langfuse keys not set, tracing disabled")
-except Exception as e:
-    logger.warning(f"Langfuse disabled: {e}")
-
-
-def trace_llm_call(input_text: str, output_text: str, model: str):
-    """Trace LLM call to Langfuse."""
-    if LANGFUSE_ENABLED and langfuse_client:
-        try:
-            with langfuse_client.start_as_current_observation(
-                name="llm-response",
-                as_type="generation",
-                input=input_text,
-                output=output_text,
-                model=model,
-                metadata={
-                    "provider": "openrouter"
-                }
-            ):
-                pass
-            langfuse_client.flush()
-        except Exception as e:
-            logger.warning(f"Trace failed: {e}")
-
 FALLBACK_MODELS = [
-    "openai/gpt-4o-mini",
-    "openai/gpt-4o",
-    "openai/gpt-4.1-mini",
+    "openai/gpt-oss-120b:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "openai/gpt-oss-20b:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+]
+
+_INJECTION_PATTERNS = [
+    "ignore previous instructions", "ignore previous", "you are now", "act as",
+    "jailbreak", "override", "system:", "forget your instructions",
+    "new persona", " dan ", "pretend", "switch role",
 ]
 
 
 class ReActAgent:
     """Simple ReAct-style agent for reasoning and tool use."""
     
-    def __init__(self, llm_client, model: str, system_prompt: str = ""):
+    def __init__(self, llm_client, model: str, system_prompt: str = "", tracer=None):
         """Initialize agent."""
         self.llm_client = llm_client
         self.model = model
+        self.tracer = tracer
         # Strong immutable system prompt (enforced if caller didn't provide one)
         DEFAULT_SYSTEM_PROMPT = (
             "[SYSTEM - IMMUTABLE]: You are Petlio, a helpful and friendly AI "
@@ -87,7 +49,7 @@ class ReActAgent:
             "parasite", "flea", "tick", "rabies", "microchip", "breed", "breeding", "clinic"
         }
     
-    def call_llm_with_fallback(self, messages: list, max_tokens: int = 600, temperature: float = 0.7) -> tuple:
+    def call_llm_with_fallback(self, messages: list, max_tokens: int = 1200, temperature: float = 0.7) -> tuple:
         """Call LLM with the configured model first, then OpenAI fallbacks."""
         last_error = None
 
@@ -101,17 +63,12 @@ class ReActAgent:
                     temperature=temperature,
                     stream=False
                 )
-                self.model = model  # Update active model so UI shows it
                 text = response.choices[0].message.content
+                if not text or not text.strip():
+                    logger.warning(f"Model {model} returned empty content, trying next...")
+                    continue
+                self.model = model  # Update active model so UI shows it
                 logger.info(f"LLM call succeeded with model: {model}")
-
-                # Trace to Langfuse (non-blocking)
-                try:
-                    user_msg = next((m["content"] for m in messages if m["role"] == "user"), "")
-                    trace_llm_call(user_msg, text, model)
-                except Exception as trace_e:
-                    logger.warning(f"Langfuse trace failed: {trace_e}")
-
                 return text, model
             except Exception as e:
                 last_error = e
@@ -123,17 +80,23 @@ class ReActAgent:
         raise last_error
     
     @staticmethod
+    def _sanitize_search_result(text: str) -> str:
+        """Strip HTML tags and truncate search result body."""
+        text = re.sub(r'<[^>]+>', '', text or '')
+        return text.strip()[:300]
+
+    @staticmethod
     def web_search(query: str, max_results: int = 3) -> str:
         """Search the web using DuckDuckGo (free, no API key)."""
         try:
             with DDGS() as ddgs:
                 results = list(ddgs.text(query, max_results=max_results))
-            
+
             if not results:
                 return "No search results found."
-            
+
             formatted_results = "\n".join([
-                f"- {r['title']}: {r['body']}"
+                f"- {r['title']}: {ReActAgent._sanitize_search_result(r.get('body', ''))}"
                 for r in results
             ])
             return formatted_results
@@ -142,16 +105,21 @@ class ReActAgent:
             return f"Search failed: {str(e)}"
     
     def should_search(self, user_message: str) -> bool:
-        """Determine if web search is needed based on keywords."""
-        search_keywords = ["search", "find", "latest", "current", "recent", "today", "news", "what is"]
+        """Only trigger web search for explicit live-data or search requests."""
+        search_triggers = [
+            "search for", "look up", "look up", "find online",
+            "latest news", "recent news", "current news",
+            "what's new", "whats new", "breaking news",
+            "search the web", "search online",
+        ]
         message_lower = user_message.lower()
-        
-        return any(keyword in message_lower for keyword in search_keywords)
+        return any(trigger in message_lower for trigger in search_triggers)
     
     def run_reasoning_loop(
         self,
         user_message: str,
         conversation_history: list,
+        system_prompt: str,
         max_iterations: int = 5
     ) -> tuple[str, list[dict]]:
         """
@@ -165,7 +133,7 @@ class ReActAgent:
         for iteration in range(max_iterations):
             # Step 1: Generate thought/decision
             thought_messages = [
-                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": system_prompt},
                 *conversation_history,
                 {"role": "user", "content": f"""Current context: {current_context}
 
@@ -255,19 +223,19 @@ RELEVANT DOCUMENTS (use this information to answer accurately):
 Instructions: Use the above documents to answer the user's question. If documents don't have the answer, use your general knowledge."""
         
         # Check for injection patterns
-            INJECTION_PATTERNS = [
-                "ignore previous instructions", "ignore previous", "you are now", "act as",
-                "jailbreak", "override", "system:", "forget your instructions",
-                "new persona", " dan ", "pretend", "switch role"
-            ]
-        if any(p in user_message.lower() for p in INJECTION_PATTERNS):
+        if any(p in user_message.lower() for p in _INJECTION_PATTERNS):
             return "I'm sorry, I can't process that request.", []
         
         # Check if we should use reasoning
         if use_reasoning and self.should_search(user_message):
-            return self.run_reasoning_loop(user_message, conversation_history)
+            return self.run_reasoning_loop(user_message, conversation_history, system_prompt)
         
         # Direct response (no reasoning loop)
+        
+        # Deduplication guard: if the caller already appended this user message to history, remove it
+        if conversation_history and conversation_history[-1].get("role") == "user" and conversation_history[-1].get("content") == user_message:
+            conversation_history = conversation_history[:-1]
+
         messages = [
             {"role": "system", "content": system_prompt},
             *conversation_history[-4:],  # Last 4 messages only
@@ -286,7 +254,7 @@ Instructions: Use the above documents to answer the user's question. If document
                 return False
             low = text.lower()
             # If it explicitly asks to ignore system prompt or to act outside role, block
-            for p in INJECTION_PATTERNS:
+            for p in _INJECTION_PATTERNS:
                 if p in low:
                     return False
             # Must contain at least one pet keyword
@@ -313,3 +281,161 @@ Instructions: Use the above documents to answer the user's question. If document
         })
 
         return answer, agent_steps
+
+    def generate_response_stream(
+        self,
+        user_message: str,
+        conversation_history: list,
+        use_reasoning: bool = True,
+        rag_context: str = "",
+        temperature: float = 0.7,
+        max_tokens: int = 1200,
+    ):
+        """
+        Like generate_response but yields event tuples for streaming UI.
+
+        Yields:
+            ("decision", label_str)   — agent decided how to answer (RAG / web / direct)
+            ("thinking", query_str)   — agent is doing a web search
+            ("chunk", text_str)       — final answer text chunk from LLM
+            ("done", agent_steps)     — streaming finished; carries agent steps list
+        """
+        from llm_client import stream_completion, FALLBACK_MODELS as _FB
+
+        agent_steps = []
+
+        # Build system prompt with RAG context
+        system_prompt = self.system_prompt
+        if rag_context and rag_context.strip():
+            system_prompt += (
+                "\n\nRELEVANT DOCUMENTS (use this to answer accurately):\n"
+                + rag_context
+                + "\n\nInstructions: Use the above documents first. "
+                  "Fall back to general knowledge only if documents don't cover it."
+            )
+            yield ("decision", "Using indexed documents (RAG)")
+        elif self.should_search(user_message):
+            yield ("decision", "Searching the web for fresh info")
+        else:
+            yield ("decision", "Answering from general pet-care knowledge")
+
+        # Injection check
+        if any(p in user_message.lower() for p in _INJECTION_PATTERNS):
+            yield ("chunk", "I'm sorry, I can't process that request.")
+            yield ("done", [])
+            return
+
+        # Run reasoning loop to collect web-search context (non-streaming).
+        # Skip entirely when RAG context is present — documents already provide context.
+        search_context = user_message
+        if use_reasoning and self.should_search(user_message) and not rag_context.strip():
+            for iteration in range(2):
+                thought_messages = [
+                    {"role": "system", "content": system_prompt},
+                    *conversation_history,
+                    {"role": "user", "content": (
+                        f"Current context: {search_context}\n\n"
+                        f"User question: {user_message}\n\n"
+                        "Should you search the web, or can you answer directly?\n"
+                        "Respond ONLY with:\n"
+                        '- "SEARCH: [query]" if you need to search\n'
+                        '- "ANSWER:" if you can answer now'
+                    )},
+                ]
+                decision, _ = self.call_llm_with_fallback(
+                    thought_messages, max_tokens=80, temperature=0.3
+                )
+                decision = decision.strip()
+
+                if decision.startswith("SEARCH:"):
+                    query = decision.replace("SEARCH:", "").strip()
+                    yield ("thinking", query)
+                    results = self.web_search(query)
+                    agent_steps.append({
+                        "iteration": iteration + 1,
+                        "thought": "Searching web",
+                        "action": f"web_search({query})",
+                        "observation": results[:300],
+                    })
+                    search_context = (
+                        f"Previous context: {search_context}\n\n"
+                        f"Search results for '{query}':\n{results}"
+                    )
+                else:
+                    break
+
+        # Deduplication guard
+        history = conversation_history
+        if history and history[-1].get("role") == "user" and history[-1].get("content") == user_message:
+            history = history[:-1]
+
+        final_user_content = (
+            f"Research context:\n{search_context}\n\nUser question: {user_message}"
+            if search_context != user_message
+            else user_message
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            *history[-4:],
+            {"role": "user", "content": final_user_content},
+        ]
+
+        yield ("decision", "Generating answer")
+
+        # Stream the final answer
+        full_answer = ""
+        models_to_try = [self.model] + [m for m in _FB if m != self.model]
+        streamed = False
+        for model in models_to_try:
+            try:
+                for chunk in stream_completion(
+                    self.llm_client, messages, model, max_tokens, temperature
+                ):
+                    full_answer += chunk
+                    yield ("chunk", chunk)
+                self.model = model
+                streamed = True
+                break
+            except Exception as exc:
+                logger.warning(f"Streaming failed for {model}: {exc}")
+                continue
+
+        if not streamed:
+            logger.warning("All streaming models failed — attempting non-streaming fallback")
+            try:
+                text, _ = self.call_llm_with_fallback(
+                    messages, max_tokens=max_tokens, temperature=temperature
+                )
+                agent_steps.append({
+                    "iteration": len(agent_steps) + 1,
+                    "thought": "Non-streaming fallback",
+                    "action": "generate_response",
+                    "observation": text[:200],
+                })
+                yield ("chunk", text)
+            except Exception as final_exc:
+                logger.error(f"Both streaming and non-streaming failed: {final_exc}")
+                yield ("chunk", (
+                    "I'm having trouble connecting to the AI service right now. "
+                    "Please check your API key or try again in a moment."
+                ))
+            yield ("done", agent_steps)
+            return
+
+        # Post-response safety check
+        low = full_answer.lower()
+        injection_caught = any(p in low for p in _INJECTION_PATTERNS)
+        has_pet_keyword = any(k in low for k in self._pet_keywords)
+        question_has_pet_keyword = any(k in user_message.lower() for k in self._pet_keywords)
+        if injection_caught or (not has_pet_keyword and not question_has_pet_keyword):
+            logger.warning("Blocked non-petcare streaming response")
+            yield ("done", agent_steps)
+            return
+
+        agent_steps.append({
+            "iteration": len(agent_steps) + 1,
+            "thought": "Streamed response",
+            "action": "generate_response_stream",
+            "observation": full_answer[:200],
+        })
+        yield ("done", agent_steps)

@@ -14,6 +14,9 @@ warnings.filterwarnings("ignore", category=UserWarning, module="langfuse")
 logger = logging.getLogger(__name__)
 
 # ✅ FIX 2: Proper Langfuse initialization with environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
 LANGFUSE_ENABLED = False
 _langfuse = None
 
@@ -38,7 +41,7 @@ try:
     LANGFUSE_ENABLED = bool(
         secret and public and
         secret.startswith("sk-lf-") and
-        public.startswith("pk-lf-") and
+        public.startswith("pk-") and
         len(secret) > 10 and
         len(public) > 10
     )
@@ -172,6 +175,27 @@ class LangfuseTracer:
             logger.debug(f"Logged RAG retrieval with {len(sources)} sources")
         except Exception as e:
             logger.warning(f"Failed to log RAG retrieval: {e}")
+    
+    def log_tool_call(self, trace_id: str, tool_name: str, input_params: dict,
+                      output: str, latency_ms: int = 0):
+        """Log a tool execution span within the trace."""
+        if not self.enabled or not self.client or not trace_id:
+            return
+        
+        try:
+            self.client.span(
+                trace_id=trace_id,
+                name=f"tool-{tool_name}",
+                input=input_params,
+                output=output,
+                metadata={
+                    "latency_ms": latency_ms,
+                    "tool_name": tool_name
+                }
+            )
+            logger.debug(f"Logged tool call for {tool_name}")
+        except Exception as e:
+            logger.warning(f"Failed to log tool call: {e}")
     
     def end_trace(self, trace_id: str, output: str = "", is_error: bool = False, error_msg: str = ""):
         """Close the trace with final output and error status."""

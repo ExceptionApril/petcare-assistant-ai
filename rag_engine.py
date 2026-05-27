@@ -1,291 +1,214 @@
 """
-RAG Engine — uses Ollama (local) for embeddings + ChromaDB for vector storage.
-No API keys needed for embeddings. Completely free and runs offline.
+RAG Engine — ChromaDB + built-in ONNX embeddings (no Ollama required).
+Works locally and on Streamlit Cloud without external embedding services.
 """
 
 import os
 import io
-import shutil
+import re
 import hashlib
-import requests
 import logging
 import chromadb
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 
 logger = logging.getLogger(__name__)
 
-# ── Config ─────────────────────────────────────────────────────
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-EMBED_MODEL     = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHROMA_PATH     = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 COLLECTION_NAME = "petcare_docs"
-CHUNK_SIZE      = 500   # characters per chunk
-CHUNK_OVERLAP   = 50    # character overlap between chunks
-TOP_K           = 3     # number of chunks to retrieve
+CHUNK_SIZE      = 500
+CHUNK_OVERLAP   = 50
+TOP_K           = 3
 
 
 class RAGEngine:
     """
     Retrieval-Augmented Generation engine.
-    
+
     Flow:
-      ingest_bytes(file) → chunk → embed (Ollama) → store (ChromaDB)
+      ingest_bytes(file) → chunk → embed (ONNX MiniLM) → store (ChromaDB)
       retrieve(query)    → embed query → similarity search → return chunks
     """
 
     def __init__(self):
-        logger.info("Initializing RAG Engine with Ollama + ChromaDB...")
-        
-        # 1. Check Ollama is reachable
-        self._check_ollama()
-        
-        # 2. Initialize ChromaDB persistent store (no settings to avoid conflicts)
+        logger.info("Initializing RAG Engine (ONNX embeddings)...")
+        self._ef = DefaultEmbeddingFunction()
+
         try:
             self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
         except Exception as e:
-            logger.warning(f"ChromaDB init error, attempting recovery: {e}")
-            # Remove corrupted database and retry
+            logger.warning("ChromaDB init error, resetting store: %s", e)
             import shutil
             if os.path.exists(CHROMA_PATH):
                 shutil.rmtree(CHROMA_PATH)
             self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
-        
-        # 3. Get or create the collection (no metadata to avoid conflicts)
-        self.collection = self.chroma.get_or_create_collection(
-            name=COLLECTION_NAME
-        )
-        
-        count = self.collection.count()
-        logger.info(f"RAG Engine ready. Vector store has {count} chunks.")
 
-    # ── Internal: Ollama check ──────────────────────────────────
-    def _check_ollama(self):
-        try:
-            r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
-            r.raise_for_status()
-            models = [m["name"] for m in r.json().get("models", [])]
-            if not any(EMBED_MODEL in m for m in models):
-                logger.warning(f"'{EMBED_MODEL}' not found in Ollama. Pulling...")
-                import subprocess
-                subprocess.run(["ollama", "pull", EMBED_MODEL], check=True)
-                logger.info(f"'{EMBED_MODEL}' pulled.")
-            else:
-                logger.info(f"Ollama running. Embedding model '{EMBED_MODEL}' ready.")
-        except requests.exceptions.ConnectionError:
-            raise RuntimeError(
-                "Ollama is not running!\n"
-                "   1. Open a new terminal\n"
-                "   2. Run: ollama serve\n"
-                "   3. Run: ollama pull nomic-embed-text\n"
-                "   4. Then restart this app"
-            )
+        self.collection = self._get_or_create_collection()
+        logger.info("RAG Engine ready. %d chunks in store.", self.collection.count())
 
-    # ── Internal: Get embedding from Ollama ─────────────────────
-    def _embed(self, text: str) -> list:
-        """Call Ollama's local embedding API."""
+    # ── Collection management ──────────────────────────────────────────────────
+
+    def _get_or_create_collection(self):
+        """Get/create collection, clearing it if stored embeddings have wrong dim."""
         try:
-            resp = requests.post(
-                f"{OLLAMA_BASE_URL}/api/embeddings",
-                json={"model": EMBED_MODEL, "prompt": text},
-                timeout=30
+            col = self.chroma.get_or_create_collection(
+                name=COLLECTION_NAME,
+                embedding_function=self._ef,
             )
-            resp.raise_for_status()
-            return resp.json()["embedding"]
+            # Detect dim mismatch with existing data (e.g. old Ollama 768-dim vectors)
+            if col.count() > 0:
+                sample = col.get(limit=1, include=["embeddings"])
+                raw_embeds = sample.get("embeddings")
+                stored_dim = int(len(raw_embeds[0])) if raw_embeds is not None and len(raw_embeds) > 0 else 0
+                expected_dim = len(self._ef(["probe"])[0])
+                if stored_dim and stored_dim != expected_dim:
+                    logger.warning(
+                        "Embedding dim mismatch (%d vs %d) — clearing collection.",
+                        stored_dim, expected_dim,
+                    )
+                    self.chroma.delete_collection(COLLECTION_NAME)
+                    col = self.chroma.create_collection(
+                        name=COLLECTION_NAME,
+                        embedding_function=self._ef,
+                    )
+            return col
         except Exception as e:
-            logger.error(f"Embedding error: {e}")
-            # Return zero vector as fallback (768 dims for nomic-embed-text)
-            return [0.0] * 768
+            logger.warning("Collection error (%s) — recreating.", e)
+            try:
+                self.chroma.delete_collection(COLLECTION_NAME)
+            except Exception:
+                pass
+            return self.chroma.create_collection(
+                name=COLLECTION_NAME,
+                embedding_function=self._ef,
+            )
 
-    # ── Internal: Chunk text ────────────────────────────────────
-    def _chunk_text(self, text: str, source: str) -> list:
-        """Split text into overlapping chunks."""
-        chunks = []
-        start = 0
-        chunk_index = 0
-        
-        while start < len(text):
-            end = start + CHUNK_SIZE
-            chunk_text = text[start:end].strip()
-            
-            if chunk_text:
-                # Create a stable unique ID based on content hash
-                chunk_id = hashlib.md5(
-                    f"{source}_{chunk_index}_{chunk_text[:50]}".encode()
-                ).hexdigest()
-                
-                chunks.append({
-                    "id": chunk_id,
-                    "text": chunk_text,
-                    "source": source,
-                    "chunk_index": chunk_index
-                })
-                chunk_index += 1
-            
-            start += CHUNK_SIZE - CHUNK_OVERLAP
-        
-        return chunks
+    # ── Ingestion ──────────────────────────────────────────────────────────────
 
-    # ── Public: Ingest from raw bytes (PDF or TXT) ───────────────
     def ingest_bytes(self, file_bytes: bytes, filename: str) -> int:
-        """
-        Ingest a file into the vector store.
-        Supports PDF and TXT files.
-        Returns number of chunks added.
-        """
-        logger.info(f"Ingesting '{filename}'...")
-        
-        # Extract text
-        if filename.lower().endswith(".pdf"):
-            text = self._extract_pdf(file_bytes)
-        else:
-            text = file_bytes.decode("utf-8", errors="ignore")
-        
+        """Ingest a PDF or TXT file. Returns the number of chunks added."""
+        logger.info("Ingesting '%s'...", filename)
+        text = (
+            self._extract_pdf(file_bytes)
+            if filename.lower().endswith(".pdf")
+            else file_bytes.decode("utf-8", errors="ignore")
+        )
         if not text.strip():
-            logger.warning(f"No text extracted from '{filename}'")
+            logger.warning("No text extracted from '%s'", filename)
             return 0
-        
         return self._ingest_text(text, source=filename)
 
     def _extract_pdf(self, file_bytes: bytes) -> str:
-        """Extract text from PDF bytes."""
         try:
             import pypdf
             reader = pypdf.PdfReader(io.BytesIO(file_bytes))
             pages = []
-            for i, page in enumerate(reader.pages):
-                page_text = page.extract_text() or ""
-                pages.append(f"[Page {i+1}]\n{page_text}")
+            for i, p in enumerate(reader.pages):
+                text = p.extract_text() or ""
+                text = text.replace("\r\n", "\n").replace("\r", "\n")
+                text = re.sub(r"[ \t]+", " ", text)   # collapse horizontal whitespace
+                text = re.sub(r"\n+", " ", text)       # all newlines → space (fix word-per-line PDFs)
+                text = re.sub(r" {2,}", " ", text)     # collapse double spaces
+                text = text.strip()
+                if text:
+                    pages.append(f"[Page {i+1}] {text}")
             return "\n\n".join(pages)
         except Exception as e:
-            logger.error(f"PDF extraction error: {e}")
+            logger.error("PDF extraction error: %s", e)
             return file_bytes.decode("utf-8", errors="ignore")
 
+    def _chunk_text(self, text: str, source: str) -> list:
+        chunks = []
+        start, idx = 0, 0
+        while start < len(text):
+            chunk_text = text[start : start + CHUNK_SIZE].strip()
+            if chunk_text:
+                chunk_id = hashlib.md5(
+                    f"{source}_{idx}_{chunk_text[:50]}".encode()
+                ).hexdigest()
+                chunks.append({"id": chunk_id, "text": chunk_text, "source": source, "chunk_index": idx})
+                idx += 1
+            start += CHUNK_SIZE - CHUNK_OVERLAP
+        return chunks
+
     def _ingest_text(self, text: str, source: str) -> int:
-        """Chunk, embed, and store text. Returns chunk count."""
         chunks = self._chunk_text(text, source)
-        
         if not chunks:
             return 0
-        
-        logger.info(f"Embedding {len(chunks)} chunks... (this may take a moment)")
-        
-        ids        = []
-        embeddings = []
-        documents  = []
-        metadatas  = []
-        
-        for i, chunk in enumerate(chunks):
-            embedding = self._embed(chunk["text"])
-            ids.append(chunk["id"])
-            embeddings.append(embedding)
-            documents.append(chunk["text"])
-            metadatas.append({
-                "source": chunk["source"],
-                "chunk_index": chunk["chunk_index"]
-            })
-            
-            # Progress every 10 chunks
-            if (i + 1) % 10 == 0:
-                logger.info(f"Embedded {i+1}/{len(chunks)} chunks...")
-        
-        # Upsert into ChromaDB (upsert = insert or update by ID)
+        logger.info("Embedding %d chunks for '%s'...", len(chunks), source)
+        # Upsert without pre-computed embeddings — collection EF handles them
         self.collection.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas
+            ids=[c["id"] for c in chunks],
+            documents=[c["text"] for c in chunks],
+            metadatas=[{"source": c["source"], "chunk_index": c["chunk_index"]} for c in chunks],
         )
-        
-        total = self.collection.count()
-        logger.info(f"Ingested {len(chunks)} chunks from '{source}'. Total in store: {total}")
+        logger.info("Ingested %d chunks from '%s'. Total: %d", len(chunks), source, self.collection.count())
         return len(chunks)
 
-    # ── Public: Retrieve relevant chunks ─────────────────────────
+    # ── Retrieval ──────────────────────────────────────────────────────────────
+
     def retrieve(self, query: str, k: int = TOP_K) -> list:
-        """
-        Find the most relevant chunks for a query.
-        Returns list of dicts with 'content' and 'source' keys.
-        """
+        """Return the k most relevant chunks for the query."""
         if self.collection.count() == 0:
             return []
-        
         try:
-            query_embedding = self._embed(query)
             n = min(k, self.collection.count())
-            
             results = self.collection.query(
-                query_embeddings=[query_embedding],
+                query_texts=[query],
                 n_results=n,
-                include=["documents", "metadatas", "distances"]
+                include=["documents", "metadatas", "distances"],
             )
-            
-            chunks = []
-            for doc, meta, dist in zip(
-                results["documents"][0],
-                results["metadatas"][0],
-                results["distances"][0]
-            ):
-                # Convert cosine distance to similarity score (0-1)
-                similarity = round(1 - dist, 3)
-                chunks.append({
+            chunks = [
+                {
                     "content": doc,
-                    "source": meta.get("source", "unknown"),
-                    "similarity": similarity
-                })
-            
-            # Filter out low-relevance chunks (similarity < 0.3)
-            relevant = [c for c in chunks if c["similarity"] > 0.3]
-            return relevant if relevant else chunks[:1]
-            
+                    "source": meta.get("source", ""),
+                    "similarity": round(1 - dist, 3),
+                }
+                for doc, meta, dist in zip(
+                    results["documents"][0],
+                    results["metadatas"][0],
+                    results["distances"][0],
+                )
+            ]
+            return chunks  # return top-k; similarity shown but not filtered
         except Exception as e:
-            logger.error(f"Retrieval error: {e}")
+            logger.error("Retrieval error: %s", e)
             return []
 
-    # ── Public: Get formatted context for prompt injection ────────
     def get_context_string(self, query: str, k: int = TOP_K) -> str:
-        """
-        Retrieve chunks and format them as a context string
-        ready to inject into the LLM system prompt.
-        """
+        """Retrieve chunks and format them as a context string for the LLM."""
         chunks = self.retrieve(query, k)
-        
         if not chunks:
             return ""
-        
-        parts = []
-        for i, chunk in enumerate(chunks, 1):
-            parts.append(
-                f"[Document {i} — Source: {chunk['source']} "
-                f"(relevance: {chunk['similarity']})]:\n{chunk['content']}"
-            )
-        
+        parts = [
+            f"[Document {i} — Source: {c['source']} (relevance: {c['similarity']})]:\n{c['content']}"
+            for i, c in enumerate(chunks, 1)
+        ]
         return "\n\n---\n\n".join(parts)
 
-    # ── Public: Stats ─────────────────────────────────────────────
+    # ── Stats / Management ─────────────────────────────────────────────────────
+
     def get_document_count(self) -> int:
-        """Return total number of chunks in the vector store."""
         try:
             return self.collection.count()
-        except:
+        except Exception:
             return 0
 
     def get_sources(self) -> list:
-        """Return list of unique source document names."""
         try:
             if self.collection.count() == 0:
                 return []
             results = self.collection.get(include=["metadatas"])
-            sources = list({m["source"] for m in results["metadatas"]})
-            return sorted(sources)
-        except:
+            return sorted({m["source"] for m in results["metadatas"]})
+        except Exception:
             return []
 
     def clear(self):
-        """Delete all documents from the vector store."""
         try:
             self.chroma.delete_collection(COLLECTION_NAME)
             self.collection = self.chroma.get_or_create_collection(
-                name=COLLECTION_NAME
+                name=COLLECTION_NAME,
+                embedding_function=self._ef,
             )
             logger.info("Vector store cleared.")
         except Exception as e:
-            logger.error(f"Clear error: {e}")
+            logger.error("Clear error: %s", e)

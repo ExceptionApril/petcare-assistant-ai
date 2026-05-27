@@ -1,4 +1,4 @@
-"""Langfuse integration for observability and tracing."""
+"""Langfuse integration for observability and tracing (v3/v4 OTel API)."""
 import logging
 from core.config import Config
 
@@ -6,7 +6,6 @@ logger = logging.getLogger(__name__)
 
 try:
     from langfuse import Langfuse
-    from langfuse.decorators import observe, langfuse_context
     LANGFUSE_AVAILABLE = True
 except ImportError:
     LANGFUSE_AVAILABLE = False
@@ -14,102 +13,102 @@ except ImportError:
 
 
 class LangfuseTracer:
-    """Wrapper for Langfuse tracing."""
-    
+    """Wrapper for Langfuse tracing (v3/v4 OTel-based SDK)."""
+
     def __init__(self, config: Config):
-        """Initialize Langfuse client if credentials provided."""
         self.config = config
         self.enabled = False
         self.langfuse = None
-        
+
         if not LANGFUSE_AVAILABLE:
-            logger.info("Langfuse module not available. Tracing disabled.")
             return
-        
+
         if config.is_langfuse_enabled():
             try:
                 self.langfuse = Langfuse(
                     secret_key=config.langfuse_secret_key,
                     public_key=config.langfuse_public_key,
-                    baseurl=config.langfuse_base_url
+                    host=config.langfuse_base_url,
                 )
-                
-                # Test connection
                 self.langfuse.auth_check()
                 self.enabled = True
-                logger.info("✅ Langfuse connected and ready for tracing")
+                logger.info("Langfuse connected.")
             except Exception as e:
-                logger.warning(f"⚠️ Langfuse connection failed: {e}")
+                logger.warning("Langfuse connection failed: %s", e)
                 self.enabled = False
-    
+
     def is_enabled(self) -> bool:
-        """Check if tracing is enabled."""
         return self.enabled
-    
+
     def trace_llm_call(self, model: str, messages: list, response_text: str, tokens_used: int = 0):
-        """Trace an LLM call to Langfuse."""
+        """Trace an LLM call as a Langfuse generation."""
         if not self.enabled or not self.langfuse:
             return
-        
         try:
-            self.langfuse.generation(
-                name="llm-call",
+            obs = self.langfuse.start_observation(
+                name="petlio-llm-call",
+                as_type="generation",
                 model=model,
-                input={"messages": messages},
+                input=messages,
                 output=response_text,
-                metadata={
-                    "provider": "openrouter",
-                    "tokens_used": tokens_used
-                }
+                metadata={"provider": "openrouter"},
+                usage_details={"total_tokens": tokens_used},
             )
+            obs.end()
         except Exception as e:
-            logger.debug(f"Langfuse trace error: {e}")
-    
+            logger.warning("Langfuse LLM trace error: %s", e)
+
     def trace_rag_retrieval(self, query: str, results: list):
-        """Trace RAG retrieval."""
         if not self.enabled or not self.langfuse:
             return
-        
         try:
-            self.langfuse.generation(
-                name="rag-retrieval",
-                model="RAG",
+            obs = self.langfuse.start_observation(
+                name="petlio-rag-retrieval",
+                as_type="retriever",
                 input={"query": query},
                 output={
                     "chunks_retrieved": len(results),
-                    "preview": [r.get("text", "")[:100] for r in results]
+                    "preview": [r.get("content", r.get("text", ""))[:100] for r in results],
                 },
-                metadata={
-                    "retrieval_type": "chromadb",
-                    "top_k": len(results)
-                }
+                metadata={"top_k": len(results)},
             )
+            obs.end()
         except Exception as e:
-            logger.debug(f"Langfuse RAG trace error: {e}")
-    
+            logger.warning("Langfuse RAG trace error: %s", e)
+
     def trace_agent_step(self, thought: str, action: str, observation: str):
-        """Trace an agent reasoning step."""
         if not self.enabled or not self.langfuse:
             return
-        
         try:
-            self.langfuse.generation(
-                name="agent-step",
-                model="ReActAgent",
-                input={
-                    "thought": thought,
-                    "action": action
-                },
+            obs = self.langfuse.start_observation(
+                name="petlio-agent-step",
+                as_type="span",
+                input={"thought": thought, "action": action},
                 output=observation,
-                metadata={"step_type": "agent_reasoning"}
+                metadata={"step_type": "agent_reasoning"},
             )
+            obs.end()
         except Exception as e:
-            logger.debug(f"Langfuse agent trace error: {e}")
-    
-    def flush(self):
-        """Flush pending traces."""
+            logger.warning("Langfuse agent trace error: %s", e)
+
+    def flush(self) -> None:
         if self.enabled and self.langfuse:
             try:
                 self.langfuse.flush()
             except Exception as e:
-                logger.debug(f"Langfuse flush error: {e}")
+                logger.warning("Langfuse flush error: %s", e)
+
+    def get_managed_prompt(self, name: str, fallback: str = "") -> str:
+        """Fetch a prompt from Langfuse Prompt Management with graceful fallback."""
+        if not self.enabled or not self.langfuse:
+            return fallback
+        try:
+            prompt = self.langfuse.get_prompt(name)
+            if hasattr(prompt, "compile"):
+                return prompt.compile()
+            if hasattr(prompt, "prompt"):
+                return prompt.prompt
+            return fallback
+        except Exception as e:
+            logger.warning("Langfuse prompt '%s' unavailable: %s", name, e)
+            return fallback

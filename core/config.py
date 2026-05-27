@@ -35,7 +35,7 @@ class Config:
         
         # OpenRouter configuration
         self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
-        self.openrouter_model = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini").strip()
+        self.openrouter_model = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()
         
         # RAG configuration
         self.chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db").strip()
@@ -54,3 +54,7 @@ class Config:
         """Check if Langfuse tracing is configured."""
         return bool(self.langfuse_secret_key and self.langfuse_public_key)
 
+    @property
+    def langfuse_host(self) -> str:
+        """Alias for langfuse_base_url to maintain compatibility."""
+        return self.langfuse_base_url

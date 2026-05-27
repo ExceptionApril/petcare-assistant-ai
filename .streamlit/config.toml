@@ -1,5 +1,5 @@
 [client]
-showErrorDetails = false
+showErrorDetails = true
 
 [logger]
 level = "error"
@@ -8,8 +8,7 @@ level = "error"
 headless = true
 runOnSave = true
 port = 8501
-enableCORS = false
-enableXsrfProtection = true
+enableXsrfProtection = false
 
 [theme]
 primaryColor = "#F5C563"

@@ -1,56 +1,84 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from agent.tools import web_search, pet_weight_calculator, medication_schedule
-from agent.engine import build_agent, run_agent
-from llama_index.core.tools import FunctionTool
+from agent_engine import ReActAgent
 
-def test_web_search_tool_returns_string():
-    with patch('agent.tools.DDGS') as MockDDGS:
-        mock_instance = MockDDGS.return_value
+@pytest.fixture
+def mock_llm_client():
+    client = MagicMock()
+    # Mock chat.completions.create
+    mock_response = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "ANSWER: Dogs should be fed high-quality kibble twice a day."
+    mock_response.choices = [mock_choice]
+    client.chat.completions.create.return_value = mock_response
+    return client
+
+def test_agent_should_search():
+    agent = ReActAgent(None, "openai/gpt-4o-mini")
+    
+    # Needs search
+    assert agent.should_search("search the web for puppy vaccines") is True
+    assert agent.should_search("what is the latest news on cat flu") is True
+    
+    # Direct answer
+    assert agent.should_search("how are you") is False
+    assert agent.should_search("my dog is happy") is False
+
+def test_web_search():
+    with patch('agent_engine.DDGS') as MockDDGS:
+        mock_instance = MockDDGS.return_value.__enter__.return_value
         mock_instance.text.return_value = [
-            {"title": "Test Title", "href": "http://test.com", "body": "Test Body"}
+            {"title": "Puppy Care Guide", "body": "Puppies need vaccination."}
         ]
+        
+        result = ReActAgent.web_search("puppy care")
+        assert "Puppy Care Guide" in result
+        assert "Puppies need vaccination." in result
 
-        result = web_search("dog food")
-        assert isinstance(result, str)
-        assert "Test Title" in result
-        assert "http://test.com" in result
-        assert "Test Body" in result
+def test_web_search_failed():
+    with patch('agent_engine.DDGS') as MockDDGS:
+        mock_instance = MockDDGS.return_value.__enter__.return_value
+        mock_instance.text.side_effect = Exception("Network error")
+        
+        result = ReActAgent.web_search("puppy care")
+        assert "Search failed" in result
 
-def test_pet_weight_calculator_tool_dog():
-    res = pet_weight_calculator("dog", 2.0, 1.0)
-    assert "Underweight" in res
+def test_generate_response_direct(mock_llm_client):
+    agent = ReActAgent(mock_llm_client, "openai/gpt-4o-mini")
     
-    res2 = pet_weight_calculator("dog", 20.0, 3.0)
-    assert "Healthy" in res2
+    # Mock LLM to return a clean pet care response
+    mock_response = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Dogs are great pets that need daily walks."
+    mock_response.choices = [mock_choice]
+    mock_llm_client.chat.completions.create.return_value = mock_response
+    
+    response_text, agent_steps = agent.generate_response(
+        user_message="Tell me about dogs",
+        conversation_history=[],
+        use_reasoning=False
+    )
+    
+    assert "daily walks" in response_text
+    assert len(agent_steps) == 1
+    assert agent_steps[0]["action"] == "generate_response"
 
-def test_pet_weight_calculator_tool_cat():
-    res = pet_weight_calculator("cat", 8.0, 2.0)
-    assert "Overweight" in res
-
-def test_medication_schedule_tool():
-    res = medication_schedule("dog", 12)
-    assert len(res) > 0
-    assert "Rabies" in res
+def test_generate_response_blocked_non_petcare(mock_llm_client):
+    agent = ReActAgent(mock_llm_client, "openai/gpt-4o-mini")
     
-def test_build_agent_and_run():
-    mock_llm = MagicMock()
-    mock_llm.chat.return_value = MagicMock(message=MagicMock(content="Mock response"))
+    # Mock LLM to return non-petcare response (e.g. coding help)
+    mock_response = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Here is a Python function: def add(a, b): return a + b"
+    mock_response.choices = [mock_choice]
+    mock_llm_client.chat.completions.create.return_value = mock_response
     
-    tools = [
-        FunctionTool.from_defaults(fn=pet_weight_calculator)
-    ]
-    agent = build_agent(tools, mock_llm, "System prompt", debug_mode=False)
+    response_text, agent_steps = agent.generate_response(
+        user_message="Help me code in Python",
+        conversation_history=[],
+        use_reasoning=False
+    )
     
-    assert agent is not None
-    
-    # We will mock the agent's chat method to prevent actual LLM calls
-    agent.chat = MagicMock()
-    agent.chat.return_value = MagicMock()
-    agent.chat.return_value.__str__.return_value = "Agent text"
-    agent.chat.return_value.sources = []
-    
-    response_text, tools_used = run_agent(agent, "Hello", [])
-    
-    assert response_text == "Agent text"
-    assert isinstance(tools_used, list)
+    assert "I'm sorry, I can only help with pet care-related questions." in response_text
+    assert len(agent_steps) == 1
+    assert agent_steps[0]["action"] == "block_non_petcare"

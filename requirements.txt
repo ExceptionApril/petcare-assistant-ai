@@ -4,16 +4,21 @@ streamlit>=1.35.0
 # LLM - OpenRouter with OpenAI SDK
 openai>=1.0.0
 
-# RAG & Embeddings (Ollama local, no sentence-transformers)
+# RAG & Embeddings (chromadb built-in ONNX, no Ollama required)
 chromadb>=0.5.0
+onnxruntime>=1.16.0
+tokenizers>=0.15.0
 pypdf>=4.0.0
 requests>=2.31.0
+
+# Markdown rendering
+markdown-it-py>=3.0.0
 
 # Agentic AI
 duckduckgo-search>=6.0.0
 
-# Prompt Management & Observability
-langfuse>=2.36.0
+# Prompt Management & Observability (v3+ uses OTel-based API — required by langfuse_tracer.py)
+langfuse>=3.0.0,<5.0.0
 
 # Security & Utilities
 python-dotenv>=1.0.0

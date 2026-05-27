@@ -45,7 +45,24 @@ def create_message_payload(
 
 
 FALLBACK_MODELS = [
-    "meta-llama/llama-3.3-8b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-    "google/gemma-3-4b-it:free"
+    "openai/gpt-oss-120b:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "openai/gpt-oss-20b:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
 ]
+
+
+def stream_completion(client: OpenAI, messages: list, model: str,
+                      max_tokens: int = 1200, temperature: float = 0.7):
+    """Stream a chat completion, yielding text chunks as they arrive."""
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        stream=True,
+    )
+    for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta

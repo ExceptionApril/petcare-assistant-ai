@@ -1,8 +1,6 @@
-from core.security import SYSTEM_PROMPT_WRAPPER
+from core.security import SYSTEM_PROMPT_IMMUTABLE
 
-PETLIO_SYSTEM_PROMPT_V2 = SYSTEM_PROMPT_WRAPPER
-
-from core.security import SYSTEM_PROMPT_WRAPPER
+PETLIO_SYSTEM_PROMPT_V2 = SYSTEM_PROMPT_IMMUTABLE
 
 def build_system_prompt(
     pet_type: str,
@@ -18,9 +16,9 @@ def build_system_prompt(
     3. Appending RAG/Agent tool instructions
     """
     # Fetch base wrapper from Langfuse if available, otherwise use local fallback
-    base_wrapper = SYSTEM_PROMPT_WRAPPER
+    base_wrapper = SYSTEM_PROMPT_IMMUTABLE
     if lf_client and lf_client.is_enabled():
-        base_wrapper = lf_client.get_prompt("petlio_system_prompt", fallback=SYSTEM_PROMPT_WRAPPER)
+        base_wrapper = lf_client.get_managed_prompt("petlio_system_prompt", fallback=SYSTEM_PROMPT_IMMUTABLE)
 
     additional_context = f"""
 Pet Context for This Conversation:
@@ -32,28 +30,14 @@ You are an expert pet care assistant powered by advanced AI tools. Use the follo
     
     if use_rag:
         additional_context += """
-KNOWLEDGE BASE (RAG): You have access to Petlio's knowledge base with verified pet health, nutrition, and medication information.
-→ Use this for factual pet care queries and medical information
-→ Always cite sources when available
-→ Prefer knowledge base answers for health/medication topics
+KNOWLEDGE GROUNDING:
+When the user's message includes a "RELEVANT DOCUMENTS" section below, treat it as the authoritative source for your answer. Quote or paraphrase those documents, cite their source filename, and only fall back to general pet-care knowledge if the documents don't cover the topic.
 """
-    
+
     if use_agent:
         additional_context += """
-AGENTIC TOOLS: You have access to specialized tools:
-→ web_search: Find current pet care news, recalls, and treatments
-→ pet_weight_calculator: Assess if a pet's weight is healthy
-→ medication_schedule: Get vaccination and deworming schedules
-→ rag_knowledge_base: Search our verified pet health database
-
-TOOL USAGE GUIDELINES:
-1. Use the RAG tool FIRST for health/nutrition/medication questions
-2. Use web_search for CURRENT information (recalls, recent treatments, trending topics)
-3. Use calculators for weight/medication assessments
-4. Call tools proactively when needed - don't wait to be asked
-5. Combine tool results with your knowledge for comprehensive answers
-
-IMPORTANT: Always think step-by-step. If you're unsure whether to use a tool, use it!
+ANSWER DIRECTLY:
+Do not describe what you "would do" or pretend to call tools. Any retrieval or web search has already been completed by the system before you see this prompt — the results are inline below. Use them and answer the user's question completely in a single response.
 """
     
     additional_context += """
@@ -65,5 +49,5 @@ RESPONSE GUIDELINES:
 - Include sources and disclaimer: "Please confirm with your veterinarian"
 """
     
-    return base_wrapper.format(additional_context=additional_context)
+    return f"{base_wrapper}\n\n{additional_context}"
  

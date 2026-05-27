@@ -51,3 +51,22 @@ Thumbs.db
 .chroma_db/
 .chroma_db_test/
 
+# Local development artifacts — do NOT ship to Streamlit Cloud
+.venv/
+.venv_old_broken/
+streamlit_out.txt
+streamlit_err.txt
+screenshot_*.png
+take_screenshot.py
+landing_screenshot.py
+scroll_screenshot.py
+check_key.py
+check_rag.py
+clear_rag.py
+diag.py
+find_model.py
+find_model2.py
+reingest_pdf.py
+run_check.py
+test_model.py
+

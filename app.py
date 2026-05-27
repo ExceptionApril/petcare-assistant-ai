@@ -1,4 +1,4 @@
-"""Petlio AI - Current working chat experience with OpenRouter, RAG, and Langfuse."""
+"""Petlio AI - Unified Premium Chat Experience with Custom Collapsible Sidebar."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import datetime as _dt
 import logging
 import os
 import uuid
+import base64
 from pathlib import Path
 
 import streamlit as st
@@ -14,11 +15,23 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 load_dotenv()
 
+# Bridge Streamlit secrets → os.environ for Streamlit Cloud deployment.
+# On local dev the .env file is used; on Cloud, secrets come from st.secrets.
+try:
+    for _sk, _sv in st.secrets.items():
+        if isinstance(_sv, str) and _sk not in os.environ:
+            os.environ[_sk] = _sv
+except Exception:
+    pass  # No secrets configured — rely on .env / existing env vars
+
+_sidebar_init = "expanded"
+
+# Set up page configurations
 st.set_page_config(
     layout="wide",
     page_title="Petlio AI",
     page_icon="🐾",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state=_sidebar_init,
 )
 
 
@@ -27,9 +40,6 @@ def petlio_logo_svg() -> str | None:
     logo_path = Path(__file__).resolve().parent / "img" / "petlio_logo.png"
     if not logo_path.exists():
         return None
-
-    import base64
-
     try:
         data = base64.b64encode(logo_path.read_bytes()).decode("utf-8")
         return f"data:image/png;base64,{data}"
@@ -37,8 +47,31 @@ def petlio_logo_svg() -> str | None:
         return None
 
 
-def _fmt_time() -> str:
-    return _dt.datetime.now().strftime("%I:%M %p")
+def _fmt_time() -> _dt.datetime:
+    return _dt.datetime.now()
+
+
+def _fmt_friendly_time(dt) -> str:
+    if not dt:
+        return "Just now"
+    if isinstance(dt, str):
+        return dt
+    now = _dt.datetime.now()
+    diff = now - dt
+    diff_sec = diff.total_seconds()
+    if diff_sec < 60:
+        return "Just now"
+    elif diff_sec < 3600:
+        m = int(diff_sec / 60)
+        return f"{m}m ago"
+    elif diff_sec < 86400:
+        h = int(diff_sec / 3600)
+        return f"{h}h ago"
+    elif diff_sec < 172800:
+        return "Yesterday"
+    else:
+        d = int(diff_sec / 86400)
+        return f"{d} days ago"
 
 
 def _is_injection(message: str) -> bool:
@@ -92,6 +125,71 @@ def _summarize_text(text: str, limit: int = 72) -> str:
     return collapsed[: limit - 3].rstrip() + "..."
 
 
+import re as _re
+
+_BR_PATTERN = _re.compile(r"<br\s*/?>", _re.IGNORECASE)
+_BR_PLACEHOLDER = "␂BRTAG␂"  # private-area sentinel that won't appear in LLM output
+
+
+# Repair emphasis spans where the LLM inserted spaces or newlines adjacent to the
+# delimiters (e.g. "** foo **" or "*foo\nbar*") — CommonMark needs delimiters flanked
+# by non-whitespace inside, otherwise the asterisks render as literal text.
+_BOLD_FIX = _re.compile(r"\*\*\s*([^*]+?)\s*\*\*", _re.DOTALL)
+_ITALIC_FIX = _re.compile(r"(?<!\*)\*\s*([^*\n]{1,300}?)\s*\*(?!\*)")
+_ITALIC_FIX_MULTILINE = _re.compile(r"(?<!\*)\*[ \t]*([^*]{2,400}?)[ \t]*\*(?!\*)", _re.DOTALL)
+
+
+def _collapse_emphasis(text: str) -> str:
+    """Trim whitespace inside ** ** and * * spans so markdown renders them."""
+    def _bold(match: _re.Match) -> str:
+        return f"**{match.group(1).strip()}**"
+
+    def _italic(match: _re.Match) -> str:
+        inner = match.group(1).strip()
+        # Don't accidentally swallow conjunctions like "a * b" math notation
+        if not inner or "*" in inner:
+            return match.group(0)
+        return f"*{inner}*"
+
+    text = _BOLD_FIX.sub(_bold, text)
+    text = _ITALIC_FIX.sub(_italic, text)
+    text = _ITALIC_FIX_MULTILINE.sub(_italic, text)
+    return text
+
+
+def _sanitize_llm_output(text: str) -> str:
+    """Strip free-model artifacts and repair common LLM markdown mistakes."""
+    if not text:
+        return ""
+    cleaned = text.replace("[object Object]", "").replace(",[object Object],", "")
+    cleaned = _collapse_emphasis(cleaned)
+    # Drop lines that are just stray commas / orphan punctuation from broken JSON serialization
+    cleaned_lines = [
+        line for line in cleaned.splitlines()
+        if line.strip() not in (",", ", ,", ",,", ", , ,")
+    ]
+    return "\n".join(cleaned_lines)
+
+
+def _format_bubble_content(text: str) -> str:
+    """Convert AI markdown text into safe HTML for the assistant bubble."""
+    text = _sanitize_llm_output(text)
+    # Preserve <br> tags (common in LLM-generated table cells) through markdown's HTML escape.
+    text = _BR_PATTERN.sub(_BR_PLACEHOLDER, text)
+    try:
+        from markdown_it import MarkdownIt
+        md = (
+            MarkdownIt("commonmark", {"breaks": True})
+            .enable("table")
+            .enable("strikethrough")
+        )
+        rendered = md.render(text)
+    except Exception:
+        import html as _html
+        rendered = f"<p>{_html.escape(text)}</p>"
+    return rendered.replace(_BR_PLACEHOLDER, "<br>")
+
+
 def _build_chat_snapshot(chat_id: str) -> dict:
     messages = [dict(message) for message in st.session_state.get("messages", [])]
     title = "New chat"
@@ -132,7 +230,6 @@ def _normalize_chat_sessions() -> None:
                 "token_count": session.get("token_count", 0),
             }
         )
-
     st.session_state.chat_sessions = normalized
 
 
@@ -152,18 +249,19 @@ def _load_chat_session(chat_id: str) -> None:
 
 
 def _start_new_chat() -> None:
+    _sync_active_chat()  # flush the current chat before switching
     st.session_state.current_chat_id = uuid.uuid4().hex
     st.session_state.messages = []
     st.session_state.token_count = 0
     st.session_state.chat_input = ""
     st.session_state.show_upload_picker = False
-    _sync_active_chat()
+    _sync_active_chat()  # register the new empty chat
 
 
 def _handle_document_upload(uploaded_file) -> None:
-    if not uploaded_file or not st.session_state.rag:
+    """Ingest a user-uploaded PDF/TXT into the RAG store."""
+    if not uploaded_file or not st.session_state.get("rag"):
         return
-
     with st.spinner("Indexing..."):
         file_bytes = uploaded_file.read()
         chunks_added = st.session_state.rag.ingest_bytes(file_bytes, uploaded_file.name)
@@ -172,11 +270,18 @@ def _handle_document_upload(uploaded_file) -> None:
             f"Document upload: {uploaded_file.name}",
             [{"text": f"Ingested {chunks_added} chunks", "source": uploaded_file.name}],
         )
-        st.success(f"✅ {uploaded_file.name} ({chunks_added} chunks)")
+        st.toast(f"{uploaded_file.name} indexed ({chunks_added} chunks)", icon="📄")
 
 
 def _submit_chat_prompt(prompt_text: str) -> None:
+    """Stage 1: validate, rate-limit, add user message, then trigger streaming rerun."""
     if not prompt_text:
+        return
+
+    # Rate limiting — check before doing anything else
+    from core.security import rate_limit_check
+    if not rate_limit_check(st.session_state, st.session_state.session_id, limit_per_minute=20):
+        st.toast("⚠️ You're sending messages too fast. Please wait a moment.", icon="⚠️")
         return
 
     if _is_injection(prompt_text):
@@ -191,660 +296,159 @@ def _submit_chat_prompt(prompt_text: str) -> None:
             }
         )
         st.rerun()
+        return
 
+    # Add user message immediately and mark prompt as pending
     st.session_state.messages.append({"role": "user", "content": prompt_text})
+    st.session_state.pending_chat_prompt = prompt_text
+    st.rerun()
 
-    with st.spinner("Thinking..."):
+
+def _process_pending_prompt() -> None:
+    """Stage 2: run inside message_feed to stream the agent response."""
+    prompt_text = st.session_state.pending_chat_prompt
+    st.session_state.pending_chat_prompt = ""  # clear before any yields
+
+    if not st.session_state.agent:
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": "❌ Agent not initialized.",
+            "sources": None, "agent_steps": None, "rag_used": False,
+        })
+        st.rerun()
+        return
+
+    # RAG retrieval — pass top-k chunks to the LLM as-is. Cosine distance can
+    # exceed 1.0, making similarity negative for legitimate matches; the LLM
+    # is instructed to ignore irrelevant context.
+    rag_context = ""
+    sources_used: list[str] = []
+    try:
+        if st.session_state.rag and st.session_state.rag.get_document_count() > 0:
+            retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=3)
+            relevant_chunks = retrieved_chunks  # no threshold filter
+            sources_used = [
+                c.get("source", "")
+                for c in relevant_chunks
+                if c.get("source", "") not in ("", "unknown")
+            ]
+            if relevant_chunks:
+                parts = [
+                    f"[Document {i} — Source: {c['source']} (relevance: {c['similarity']})]:\n{c['content']}"
+                    for i, c in enumerate(relevant_chunks, 1)
+                ]
+                rag_context = "\n\n---\n\n".join(parts)
+            _trace_rag(st.session_state.langfuse_tracer, prompt_text, retrieved_chunks)
+    except Exception as exc:
+        logger.error("RAG error: %s", exc)
+
+    # Conversation history (exclude the user message just added)
+    history_msgs = st.session_state.messages[:-1][-4:]
+    clean_history = [{"role": m["role"], "content": m["content"]} for m in history_msgs]
+
+    # Stream the response using st.status for reasoning steps
+    full_response = ""
+    agent_steps: list[dict] = []
+    web_searches: list[str] = []
+    blocked = False
+    step_num = 0
+
+    # Pre-seed the reasoning trace with the RAG retrieval (it happens before the agent loop)
+    rag_steps: list[dict] = []
+    if rag_context:
+        step_num += 1
+        rag_steps.append({
+            "iteration": step_num,
+            "thought": "Retrieve relevant chunks from indexed documents",
+            "action": "rag_retrieve(k=3)",
+            "observation": f"{len(sources_used)} sources: {', '.join(s.rsplit('/', 1)[-1] for s in sources_used) or 'none'}",
+        })
+
+    # Live-streaming placeholder for the assistant bubble (renders chunks token-by-token)
+    response_placeholder = st.empty()
+
+    with st.status("Petlio is thinking...", expanded=True) as status_box:
+        if rag_context:
+            st.write(f"📚 **Step {step_num}** · Retrieved "
+                     f"{len(sources_used)} document chunk(s) from RAG store")
         try:
-            rag_context = ""
-            sources_used: list[str] = []
-            retrieved_chunks: list[dict] = []
-
-            if st.session_state.rag and st.session_state.rag.get_document_count() > 0:
-                try:
-                    retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=3)
-                    sources_used = [chunk.get("source", "unknown") for chunk in retrieved_chunks]
-                    rag_context = st.session_state.rag.get_context_string(prompt_text, k=3)
-                    _trace_rag(st.session_state.langfuse_tracer, prompt_text, retrieved_chunks)
-                except Exception as exc:
-                    logger.error("RAG error: %s", exc)
-
-            if not st.session_state.agent:
-                st.error("❌ Agent not initialized")
-                return
-
-            response_text, agent_steps = st.session_state.agent.generate_response(
+            for event_type, payload in st.session_state.agent.generate_response_stream(
                 user_message=prompt_text,
-                conversation_history=st.session_state.messages[-4:],
+                conversation_history=clean_history,
                 use_reasoning=True,
                 rag_context=rag_context,
                 temperature=st.session_state.temperature,
                 max_tokens=st.session_state.max_tokens,
-            )
-
-            _trace_llm(
-                st.session_state.langfuse_tracer,
-                user_input=prompt_text,
-                response_text=response_text,
-                tokens_used=len(prompt_text.split()) + len(response_text.split()),
-            )
-            _trace_agent_steps(st.session_state.langfuse_tracer, agent_steps)
-
-            st.session_state.token_count += len(prompt_text.split()) + len(response_text.split())
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": response_text,
-                    "sources": sources_used,
-                    "agent_steps": agent_steps,
-                    "rag_used": bool(rag_context),
-                }
-            )
-            _sync_active_chat()
+            ):
+                if event_type == "decision":
+                    step_num += 1
+                    st.write(f"💭 **Step {step_num}** · {payload}")
+                elif event_type == "thinking":
+                    step_num += 1
+                    st.write(f"🌐 **Step {step_num}** · Web search: *{payload}*")
+                    web_searches.append(payload)
+                elif event_type == "chunk":
+                    full_response += payload
+                    # Live render of the answer as tokens stream in
+                    response_placeholder.markdown(
+                        f'<div class="msg-row assistant">'
+                        f'<div class="bubble-assistant">'
+                        f'{_format_bubble_content(full_response)}'
+                        f'<span style="opacity:0.5;">▌</span>'
+                        f'</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                elif event_type == "done":
+                    agent_steps = payload
         except Exception as exc:
-            logger.exception("Chat processing failed")
-            st.error(f"❌ Error: {exc}")
+            logger.exception("Streaming failed")
+            full_response = f"❌ Error: {exc}"
+            blocked = True
 
+        status_box.update(
+            label="Done!" if not blocked else "Error occurred",
+            state="complete" if not blocked else "error",
+            expanded=False,
+        )
+
+    # Combine RAG + agent steps so the saved reasoning trace shows the whole flow
+    agent_steps = rag_steps + (agent_steps or [])
+
+    # Clear the live placeholder — the message will re-render through the normal loop on rerun
+    response_placeholder.empty()
+
+    # If the response was blocked by safety checks, use fallback
+    if not full_response.strip() or blocked:
+        full_response = (
+            "I'm sorry, I can only help with pet care-related questions. "
+            "Please ask something about your pet's health, nutrition, training, or care."
+        )
+
+    _trace_llm(
+        st.session_state.langfuse_tracer,
+        user_input=prompt_text,
+        response_text=full_response,
+        tokens_used=len(prompt_text.split()) + len(full_response.split()),
+    )
+    _trace_agent_steps(st.session_state.langfuse_tracer, agent_steps)
+    # Flush so Streamlit reruns don't drop buffered traces
+    if st.session_state.langfuse_tracer:
+        st.session_state.langfuse_tracer.flush()
+
+    st.session_state.token_count += len(prompt_text.split()) + len(full_response.split())
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": full_response,
+        "sources": sources_used,
+        "web_searches": web_searches,
+        "agent_steps": agent_steps,
+        "rag_used": bool(rag_context),
+    })
+    _sync_active_chat()
     st.rerun()
 
 
-st.markdown(
-    """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-:root {
-    --bg: #fdfaf1;
-    --panel: #ffffff;
-    --panel-soft: #faf7ef;
-    --line: #e6e1d7;
-    --text: #111827;
-    --muted: #6b7280;
-    --muted-2: #9ca3af;
-    --gold: #f5c563;
-    --gold-2: #f0b84d;
-    --navy: #1b2333;
-    --shadow: 0 14px 36px rgba(17, 24, 39, 0.06);
-}
-
-* { box-sizing: border-box; }
-html, body, .stApp, [data-testid="stAppViewContainer"] {
-    margin: 0;
-    background: linear-gradient(180deg, #fffaf0 0%, #fdfaf1 100%);
-    font-family: 'Inter', sans-serif;
-    color: var(--text);
-    height: 100vh;
-    overflow: hidden;
-}
-
-#MainMenu, .stDeployButton, header, footer, [data-testid="stHeader"], [data-testid="collapsedControl"] {
-    display: none !important;
-}
-
-[data-testid="stMainBlockContainer"] {
-    max-width: 100% !important;
-    padding: 0 !important;
-    height: 100vh;
-    overflow: hidden;
-}
-
-.block-container {
-    padding: 0 !important;
-    max-width: 100% !important;
-}
-
-.shell {
-    display: grid;
-    grid-template-columns: minmax(250px, 1.25fr) minmax(520px, 4.8fr) minmax(240px, 1.4fr);
-    gap: 18px;
-    padding: 18px;
-    height: 100vh;
-    overflow: hidden;
-}
-
-.panel {
-    background: var(--panel);
-    border: 1px solid rgba(230, 225, 215, 0.95);
-    border-radius: 22px;
-    box-shadow: var(--shadow);
-    overflow: hidden;
-}
-
-.sidebar {
-    background: transparent;
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    overflow: hidden;
-}
-
-.sidebar-top,
-.sidebar-mid,
-.sidebar-bottom {
-    padding: 18px 16px;
-}
-
-.sidebar-top {
-    border-bottom: 1px solid var(--line);
-}
-
-.brand {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 16px;
-}
-
-.brand-mark {
-    width: 42px;
-    height: 42px;
-    border-radius: 14px;
-    background: linear-gradient(135deg, var(--gold), var(--gold-2));
-    display: grid;
-    place-items: center;
-    font-weight: 800;
-    color: #111827;
-    box-shadow: 0 8px 20px rgba(245, 197, 99, 0.3);
-    flex-shrink: 0;
-}
-
-.brand-mark img,
-.chat-avatar img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    display: block;
-}
-
-.brand-title { font-size: 1rem; font-weight: 800; color: var(--text); margin: 0; }
-.brand-subtitle { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
-
-.section-label {
-    display: block;
-    font-size: 0.8rem;
-    font-weight: 800;
-    color: var(--text);
-    letter-spacing: 0.02em;
-    margin-bottom: 10px;
-}
-
-.section-divider {
-    height: 1px;
-    background: var(--line);
-    margin: 16px 0;
-}
-
-.status-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 9px;
-    border-radius: 999px;
-    font-size: 0.74rem;
-    font-weight: 700;
-    margin: 0 6px 8px 0;
-    border: 1px solid transparent;
-}
-.status-ok { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
-.status-warn { background: #fef3c7; color: #92400e; border-color: #fde68a; }
-.status-err { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
-
-.center {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    background: linear-gradient(180deg, #ffffff 0%, #fffef9 100%);
-    overflow: hidden;
-}
-
-.chat-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 18px 20px;
-    border-bottom: 1px solid var(--line);
-    background: rgba(255,255,255,0.92);
-}
-
-.chat-avatar {
-    width: 42px;
-    height: 42px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, #97b9bf, #e8ad7e);
-    display: grid;
-    place-items: center;
-    font-size: 1.2rem;
-    flex-shrink: 0;
-    box-shadow: 0 8px 20px rgba(151, 185, 191, 0.24);
-}
-
-.chat-avatar img {
-    border-radius: 50%;
-}
-
-.chat-title { font-weight: 800; font-size: 1rem; color: var(--text); }
-.chat-subtitle { color: var(--muted); font-size: 0.78rem; margin-top: 3px; }
-
-.messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 18px 20px 10px;
-    background: linear-gradient(180deg, #fdfaf1 0%, #fff8e6 100%);
-    min-height: 0;
-}
-
-.message-row {
-    display: flex;
-    margin-bottom: 12px;
-}
-
-.message-row.user { justify-content: flex-end; }
-.message-row.assistant { justify-content: flex-start; }
-
-.bubble {
-    max-width: min(78%, 700px);
-    padding: 12px 15px;
-    border-radius: 18px;
-    line-height: 1.55;
-    font-size: 0.92rem;
-    word-break: break-word;
-}
-
-.bubble.user {
-    background: linear-gradient(135deg, var(--gold), var(--gold-2));
-    color: #111827;
-    border-bottom-right-radius: 6px;
-    box-shadow: 0 8px 18px rgba(245, 197, 99, 0.18);
-}
-
-.bubble.assistant {
-    background: #ffffff;
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-bottom-left-radius: 6px;
-    box-shadow: 0 4px 10px rgba(17, 24, 39, 0.05);
-}
-
-.meta-row {
-    color: var(--muted-2);
-    font-size: 0.72rem;
-    margin-top: 4px;
-}
-
-.chips {
-    display: flex;
-    gap: 8px;
-    padding: 0;
-    flex-wrap: wrap;
-    justify-content: center;
-    border: 0;
-    background: transparent;
-}
-
-.chip-btn {
-    border: 1px solid var(--line) !important;
-    background: #fff !important;
-    color: var(--muted) !important;
-    border-radius: 999px !important;
-    font-size: 0.78rem !important;
-    font-weight: 700 !important;
-    padding: 8px 16px !important;
-    line-height: 1 !important;
-    box-shadow: none !important;
-    width: auto !important;
-}
-
-.chip-btn:active,
-.chip-btn:focus-visible {
-    background: #fff !important;
-    color: var(--muted) !important;
-    border-color: var(--line) !important;
-    box-shadow: none !important;
-}
-
-.chip-btn:hover {
-    border-color: var(--gold) !important;
-    background: #fff9e6 !important;
-    color: #111827 !important;
-}
-
-.chip-container-marker { display: none; }
-.chip-container-marker + div [data-testid="stHorizontalBlock"] {
-    flex-wrap: wrap !important;
-    justify-content: center !important;
-}
-.chip-container-marker + div [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-    min-width: fit-content !important;
-    flex: 0 0 auto !important;
-    width: auto !important;
-}
-.chip-container-marker + div [data-testid="stButton"] > button {
-    border-radius: 999px !important;
-    border: 1px solid rgba(226,232,240,0.9) !important;
-    background: #fff !important;
-    color: #6b7280 !important;
-    font-weight: 700 !important;
-    padding: 8px 14px !important;
-}
-.chip-container-marker + div [data-testid="stButton"] > button:hover {
-    background: #fff8ea !important;
-    color: #111827 !important;
-    border-color: var(--gold) !important;
-}
-
-/* Neutralize nested Streamlit columns/vertical blocks inside the center panel and chip row */
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(2) div[data-testid="stColumn"] {
-    background: transparent !important;
-    min-height: 0 !important;
-    height: auto !important;
-    box-shadow: none !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(2) div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] {
-    background: transparent !important;
-    min-height: 0 !important;
-    height: auto !important;
-    overflow: visible !important;
-}
-
- 
-
-.composer-card {
-    flex-shrink: 0 !important;
-    margin-top: 0px;
-    padding: 0px;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-}
-
-.composer-footer {
-    margin-top: 8px;
-    margin-bottom: 0px;
-}
-
-[data-testid="stChatInput"] {
-    border: 1px solid var(--line) !important;
-    border-radius: 999px !important;
-    background: #fff !important;
-    box-shadow: 0 10px 24px rgba(17,24,39,0.05) !important;
-}
-
-[data-testid="stChatInput"]:focus-within {
-    border-color: var(--gold) !important;
-    box-shadow: 0 0 0 3px rgba(245,197,99,0.18), 0 10px 24px rgba(17,24,39,0.05) !important;
-}
-
-[data-testid="stChatInputSubmitButton"] button {
-    background: linear-gradient(135deg, var(--gold), var(--gold-2)) !important;
-    color: #111827 !important;
-    border-radius: 50% !important;
-    border: none !important;
-}
-
- 
-
-.center {
-    background: linear-gradient(180deg, #fdfaf1 0%, #fff7e6 100%);
-    display: flex !important;
-    flex-direction: column !important;
-    height: 100% !important;
-}
-
-.right {
-    background: #ffffff;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) .stButton > button {
-    width: 100% !important;
-    background: linear-gradient(135deg, var(--gold), var(--gold-2)) !important;
-    color: #111827 !important;
-    border: none !important;
-    border-radius: 14px !important;
-    font-weight: 800 !important;
-    box-shadow: 0 10px 22px rgba(245, 197, 99, 0.22) !important;
-}
-
-div[data-testid="stColumn"]:nth-of-type(2) div[data-testid="stHorizontalBlock"] [data-testid="stButton"] > button {
-    width: auto !important;
-    padding: 8px 16px !important;
-    border-radius: 999px !important;
-    border: 1px solid var(--line) !important;
-    background: #ffffff !important;
-    color: var(--muted) !important;
-    box-shadow: none !important;
-    font-weight: 700 !important;
-}
-
-div[data-testid="stColumn"]:nth-of-type(2) div[data-testid="stHorizontalBlock"] [data-testid="stButton"] > button:hover {
-    border-color: var(--gold) !important;
-    background: #fff9e6 !important;
-    color: #111827 !important;
-}
-
-div[data-testid="stColumn"]:nth-of-type(2) div[data-testid="stHorizontalBlock"]:last-of-type [data-testid="stButton"] > button {
-    width: 42px !important;
-    height: 42px !important;
-    padding: 0 !important;
-    border-radius: 50% !important;
-    border: 1px solid rgba(230, 225, 215, 0.95) !important;
-    background: #fff !important;
-    color: #111827 !important;
-    box-shadow: 0 8px 18px rgba(17, 24, 39, 0.08) !important;
-}
-
-div[data-testid="stColumn"]:nth-of-type(2) div[data-testid="stHorizontalBlock"]:last-of-type [data-testid="stButton"] > button:hover {
-    border-color: var(--gold) !important;
-    background: #fff9e6 !important;
-}
-
-[data-testid="stChatMessage"] {
-    padding: 0 !important;
-}
-
-[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p {
-    margin: 0 !important;
-}
-
-.composer-footer [data-testid="stColumn"] {
-    padding: 0 4px !important;
-}
-
-.composer-footer [data-testid="stColumn"] [data-testid="stButton"] > button {
-    width: 40px !important;
-    height: 40px !important;
-    padding: 0 !important;
-    border-radius: 50% !important;
-    border: 1px solid #e5e7eb !important;
-    background: #ffffff !important;
-    color: #111827 !important;
-    font-weight: 700 !important;
-    box-shadow: 0 2px 8px rgba(17, 24, 39, 0.06) !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-
-.composer-footer [data-testid="stColumn"] [data-testid="stButton"] > button:hover {
-    background: #f9fafb !important;
-    border-color: var(--gold) !important;
-}
-
-[data-testid="stChatInput"] {
-    border: 1px solid var(--line) !important;
-    border-radius: 999px !important;
-    background: #ffffff !important;
-    box-shadow: 0 2px 8px rgba(17, 24, 39, 0.04) !important;
-    padding: 10px 16px !important;
-}
-
-[data-testid="stChatInput"]:focus-within {
-    border-color: var(--gold) !important;
-    box-shadow: 0 0 0 2px rgba(245, 197, 99, 0.1), 0 2px 8px rgba(17, 24, 39, 0.04) !important;
-}
-
-.right {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    background: #fff;
-    overflow: hidden;
-}
-
-.right-head {
-    padding: 18px 18px 12px;
-    border-bottom: 1px solid var(--line);
-}
-
-.history-item {
-    border: 1px solid transparent;
-    background: #fafafa;
-    border-radius: 14px;
-    padding: 12px 13px;
-    margin-bottom: 8px;
-}
-
-.history-title {
-    font-size: 0.84rem;
-    font-weight: 800;
-    color: var(--text);
-}
-
-.history-time {
-    margin-top: 4px;
-    color: var(--muted-2);
-    font-size: 0.72rem;
-}
-
-.empty-state {
-    text-align: center;
-    color: var(--muted-2);
-    padding: 64px 18px 40px;
-}
-
-.empty-state h2 {
-    margin: 12px 0 6px;
-    color: var(--text);
-    font-size: 1rem;
-}
-
-.expander-card {
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    background: #fcfcfc;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) > div[data-testid="stVerticalBlock"] {
-    background: #ffffff !important;
-    min-height: calc(100vh - 36px) !important;
-    border-radius: 22px !important;
-    overflow: hidden !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) {
-    background: #ffffff !important;
-    border-radius: 22px !important;
-    overflow: hidden !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(2) > div[data-testid="stVerticalBlock"] {
-    background: linear-gradient(180deg, #fdfaf1 0%, #fff7e6 100%) !important;
-    min-height: calc(100vh - 36px) !important;
-    border-radius: 22px !important;
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
-    display: flex !important;
-    flex-direction: column !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(2) {
-    background: linear-gradient(180deg, #fdfaf1 0%, #fff7e6 100%) !important;
-    border-radius: 22px !important;
-    overflow: hidden !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div[data-testid="stVerticalBlock"] {
-    background: #ffffff !important;
-    min-height: calc(100vh - 36px) !important;
-    border-radius: 22px !important;
-    overflow: hidden !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) {
-    background: #ffffff !important;
-    border-radius: 22px !important;
-    overflow: hidden !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) [data-testid="stButton"] > button {
-    width: 100% !important;
-    border: none !important;
-    background: linear-gradient(135deg, var(--gold), var(--gold-2)) !important;
-    color: #111827 !important;
-    font-weight: 800 !important;
-    border-radius: 14px !important;
-    padding: 0.75rem 1rem !important;
-    box-shadow: 0 10px 24px rgba(245, 197, 99, 0.24) !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) [data-testid="stButton"] > button {
-    width: 100% !important;
-    background: #fffaf0 !important;
-    color: #111827 !important;
-    border: 1px solid #f3c15c !important;
-    border-radius: 14px !important;
-    text-align: left !important;
-    font-weight: 700 !important;
-    box-shadow: none !important;
-    padding: 0.82rem 0.95rem !important;
-    margin-bottom: 0.5rem !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) .stCaption {
-    margin: -0.3rem 0 0.8rem 0.2rem !important;
-    color: var(--muted-2) !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
-    overflow: hidden !important;
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] {
-    height: 100% !important;
-    overflow: hidden !important;
-}
-
-div[data-testid="stColumn"] div[data-testid="stColumn"] {
-    background: transparent !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    min-height: 0 !important;
-    height: auto !important;
-    overflow: visible !important;
-}
-
-/* Sticky footer for center column */
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(2) > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:last-of-type {
-    position: sticky;
-    bottom: 0;
-    z-index: 99;
-    padding: 10px 18px 18px 18px;
-    background: linear-gradient(180deg, rgba(255,247,230,0) 0%, #fff7e6 15%, #fff7e6 100%);
-}
-
-div[data-testid="stMainBlockContainer"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(2) > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:last-of-type > div > div[data-testid="stVerticalBlock"] {
-    background: #ffffff;
-    border: 1px solid var(--line);
-    border-radius: 24px;
-    padding: 12px 18px 0px 18px;
-    box-shadow: 0 4px 20px rgba(17,24,39,0.05);
-}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-
+# Initialize sessions states
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "chat_sessions" not in st.session_state:
@@ -853,14 +457,16 @@ if "current_chat_id" not in st.session_state:
     st.session_state.current_chat_id = uuid.uuid4().hex
 if "token_count" not in st.session_state:
     st.session_state.token_count = 0
-if "show_upload_picker" not in st.session_state:
-    st.session_state.show_upload_picker = False
 if "temperature" not in st.session_state:
     st.session_state.temperature = 0.7
 if "max_tokens" not in st.session_state:
-    st.session_state.max_tokens = 400
+    st.session_state.max_tokens = 1000
 if "pending_chat_prompt" not in st.session_state:
     st.session_state.pending_chat_prompt = ""
+if "show_upload_picker" not in st.session_state:
+    st.session_state.show_upload_picker = False
+if "session_id" not in st.session_state:
+    st.session_state.session_id = uuid.uuid4().hex
 
 _normalize_chat_sessions()
 if not st.session_state.chat_sessions:
@@ -870,31 +476,7 @@ elif not any(session["id"] == st.session_state.current_chat_id for session in st
 
 _sync_active_chat()
 
-if "agent" not in st.session_state:
-    try:
-        from core.config import Config
-        from agent_engine import ReActAgent
-        from llm_client import get_llm_client
-
-        config = Config()
-        st.session_state.agent_config = config
-        st.session_state.agent = ReActAgent(get_llm_client(config), config.openrouter_model)
-    except Exception as exc:
-        logger.exception("Agent initialization failed")
-        st.error(f"❌ Failed to initialize agent: {exc}")
-        st.session_state.agent = None
-        st.session_state.agent_config = None
-
-if "rag" not in st.session_state:
-    try:
-        from rag_engine import RAGEngine
-
-        st.session_state.rag = RAGEngine()
-    except Exception as exc:
-        logger.exception("RAG initialization failed")
-        st.error(f"❌ Failed to initialize RAG: {exc}")
-        st.session_state.rag = None
-
+# Initialize core engines
 if "langfuse_tracer" not in st.session_state:
     try:
         from core.config import Config
@@ -906,192 +488,781 @@ if "langfuse_tracer" not in st.session_state:
         logger.warning("Langfuse initialization failed: %s", exc)
         st.session_state.langfuse_tracer = None
 
+if not st.session_state.get("agent"):
+    try:
+        from core.config import Config
+        from agent_engine import ReActAgent
+        from llm_client import get_llm_client
+        from prompts.system import build_system_prompt
 
-col_left, col_center, col_right = st.columns([1.4, 4.8, 1.5], gap="small")
+        config = Config()
+        st.session_state.agent_config = config
 
-with col_left:
-    st.markdown('<div class="panel sidebar">', unsafe_allow_html=True)
-    st.markdown("<div class='sidebar-top'>", unsafe_allow_html=True)
-    sidebar_logo = petlio_logo_svg()
-    sidebar_mark = f'<img src="{sidebar_logo}" alt="Petlio logo" />' if sidebar_logo else "P"
+        system_prompt = build_system_prompt(
+            pet_type="Unknown",
+            pet_age="Unknown",
+            use_rag=True,
+            use_agent=True,
+            lf_client=st.session_state.get("langfuse_tracer")
+        )
+        st.session_state.agent = ReActAgent(
+            get_llm_client(config),
+            config.openrouter_model,
+            system_prompt=system_prompt,
+            tracer=st.session_state.get("langfuse_tracer"),
+        )
+    except Exception as exc:
+        logger.exception("Agent initialization failed")
+        st.error(f"❌ Failed to initialize agent: {exc}")
+        st.session_state.agent = None
+        st.session_state.agent_config = None
+
+if not st.session_state.get("rag"):
+    try:
+        from rag_engine import RAGEngine
+        st.session_state.rag = RAGEngine()
+    except Exception as exc:
+        logger.exception("RAG initialization failed")
+        st.error(f"❌ Failed to initialize RAG: {exc}")
+        st.session_state.rag = None
+
+
+LOGO_DATA = petlio_logo_svg()
+
+
+def _logo_img(w: int, h: int, r: str = "9px") -> str:
+    if LOGO_DATA:
+        return (
+            f'<img src="{LOGO_DATA}" style="width:{w}px;height:{h}px;'
+            f'object-fit:contain;flex-shrink:0;border-radius:{r};" alt="Petlio" />'
+        )
+    return "🐾"
+
+
+# =============================================================================
+# CSS — matches the screenshot design spec exactly
+# =============================================================================
+CSS = """<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap');
+
+/* --- Design tokens -------------------------------------------------------- */
+:root {
+    --primary: #f59e0b;
+    --primary-hover: #d97706;
+    --primary-grad: linear-gradient(135deg, #f59e0b, #eab308);
+    --app-bg: #fefcf6;
+    --surface: #ffffff;
+    --cream: #fef8f3;
+    --cream-border: #f5e6d8;
+    --border: #e7e5e4;
+    --text-primary: #2c2418;
+    --text-muted: #78716c;
+    --text-body: #5a4a38;
+    --source-bg: #fef3c7;
+    --source-text: #92400e;
+    --shadow-sm: 0 1px 3px rgba(44,36,24,0.06);
+    --shadow-md: 0 4px 16px rgba(44,36,24,0.08);
+    --font: 'Outfit', 'Inter', system-ui, sans-serif;
+}
+
+/* --- Hide Streamlit chrome ------------------------------------------------ */
+#MainMenu, header[data-testid="stHeader"], footer { visibility: hidden; }
+.stDeployButton { display: none !important; }
+
+/* --- Base ----------------------------------------------------------------- */
+html, body, .stApp {
+    font-family: var(--font) !important;
+    background: var(--app-bg) !important;
+}
+.block-container {
+    padding-top: 0.75rem !important;
+    padding-bottom: 0 !important;
+    max-width: 860px !important;
+}
+
+/* --- Sidebar — always visible, never collapsible ------------------------- */
+button[data-testid="collapseSidebarButton"],
+button[data-testid="baseButton-headerNoPadding"],
+[data-testid="stSidebarCollapsedControl"] {
+    display: none !important;
+}
+section[data-testid="stSidebar"] {
+    background: var(--surface) !important;
+    border-right: 1px solid var(--border) !important;
+    transform: none !important;
+    display: block !important;
+    min-width: 15rem !important;
+    visibility: visible !important;
+}
+section[data-testid="stSidebar"] > div { padding-top: 0 !important; }
+
+/* Brand header */
+.petlio-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 16px 14px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+}
+.petlio-brand-name {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--text-primary);
+    font-family: 'Outfit', sans-serif;
+}
+
+/* New Chat button — amber gradient */
+section[data-testid="stSidebar"] .stButton > button {
+    background: var(--primary-grad) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    padding: 0.55rem 0.75rem !important;
+    width: 100% !important;
+    box-shadow: 0 2px 8px rgba(245,158,11,0.18) !important;
+    transition: opacity 150ms ease !important;
+}
+section[data-testid="stSidebar"] .stButton > button:hover {
+    opacity: 0.88 !important;
+}
+
+/* Override: history-item overlay buttons must be invisible */
+div[class*="st-key-ch_item_"] .stButton > button {
+    background: transparent !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    color: transparent !important;
+    font-size: 0 !important;
+    border: none !important;
+}
+
+/* Sidebar search */
+section[data-testid="stSidebar"] .stTextInput input {
+    background: #fafaf9 !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    font-size: 13px !important;
+    color: var(--text-primary) !important;
+}
+section[data-testid="stSidebar"] .stTextInput label { display: none !important; }
+
+/* Chat history rows */
+.chat-hist-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    pointer-events: none;
+}
+.chat-hist-icon {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--primary-grad); color: #fff;
+    font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.chat-hist-details { flex: 1; min-width: 0; }
+.chat-hist-header {
+    display: flex; justify-content: space-between; align-items: center; gap: 6px;
+}
+.chat-hist-title {
+    font-size: 13px; font-weight: 600; color: var(--text-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
+}
+.chat-hist-time { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.chat-hist-preview {
+    font-size: 12px; color: var(--text-body);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
+}
+
+/* Overlay container positioning */
+div[class*="st-key-ch_item_"] {
+    position: relative !important;
+    margin: 2px 8px !important;
+    border-radius: 8px !important;
+    min-height: 52px !important;
+}
+div[class*="st-key-ch_item_active_"] {
+    background: #fde68a !important;
+    border-left: 3px solid var(--primary) !important;
+}
+div[class*="st-key-ch_item_inactive_"]:hover { background: #fffbeb !important; }
+div[class*="st-key-ch_item_"] button {
+    position: absolute !important;
+    inset: 0 !important;
+    opacity: 0 !important;
+    z-index: 10 !important;
+    border: none !important;
+    background: transparent !important;
+    cursor: pointer !important;
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+}
+
+/* Sidebar section label */
+.sidebar-section-label {
+    font-size: 11px; font-weight: 700; color: var(--text-muted);
+    letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 6px 16px 4px; margin-top: 4px;
+}
+
+/* --- Top header bar ------------------------------------------------------- */
+.chat-top-bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 0 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--app-bg);
+    position: sticky; top: 0; z-index: 50;
+    margin-bottom: 4px;
+}
+.chat-top-logo {
+    width: 40px; height: 40px; border-radius: 12px;
+    overflow: hidden; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.chat-top-title {
+    font-size: 15px; font-weight: 800; color: var(--text-primary);
+    font-family: 'Outfit', sans-serif;
+}
+.chat-top-sub { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+.online-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #22c55e;
+    box-shadow: 0 0 0 2px rgba(34,197,94,0.2); flex-shrink: 0; margin-left: auto;
+}
+
+/* --- Message bubbles ------------------------------------------------------ */
+.msg-row {
+    display: flex; align-items: flex-start; gap: 10px;
+    width: 100%; margin-bottom: 14px;
+}
+.msg-row.user { flex-direction: row-reverse; }
+
+.bubble-user {
+    background: var(--primary-grad); color: #fff;
+    font-size: 14px; line-height: 1.6; padding: 12px 16px;
+    border-radius: 18px 18px 4px 18px;
+    max-width: 70%; word-break: break-word;
+    box-shadow: var(--shadow-sm);
+}
+.bubble-assistant {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 18px 18px 18px 4px;
+    padding: 14px 18px; font-size: 14px; line-height: 1.6;
+    color: var(--text-primary); max-width: 78%;
+    word-break: break-word; box-shadow: var(--shadow-sm);
+}
+
+.avatar-me {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--text-primary); color: #fff;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.avatar-bot {
+    width: 32px; height: 32px; border-radius: 10px;
+    overflow: hidden; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.avatar-bot img { width: 32px; height: 32px; object-fit: contain; }
+
+/* --- Sources panel -------------------------------------------------------- */
+.sources-panel {
+    margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.sources-label {
+    font-size: 10px; font-weight: 700; color: var(--text-muted);
+    letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px;
+}
+.sources-list { display: flex; flex-direction: column; gap: 6px; }
+.source-card {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.7);
+    border: 1px solid var(--cream-border);
+    border-radius: 10px; font-size: 13px;
+}
+.source-index {
+    flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px;
+    background: var(--source-bg); color: var(--source-text);
+    font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; margin-top: 1px;
+}
+.source-body { flex: 1; min-width: 0; }
+.source-title { font-weight: 600; color: var(--text-primary); }
+.source-domain { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+.source-snippet { color: var(--text-muted); font-size: 12px; margin-top: 2px; line-height: 1.4; }
+
+/* Meta pills */
+.meta-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--source-bg); border: 1px solid #fde68a;
+    border-radius: 20px; padding: 2px 10px;
+    font-size: 11px; color: var(--source-text); font-weight: 600;
+}
+.meta-row {
+    display: flex; gap: 6px; margin-top: 10px;
+    padding-top: 10px; border-top: 1px solid var(--border); flex-wrap: wrap;
+}
+
+/* --- Welcome state -------------------------------------------------------- */
+.welcome-wrap { text-align: center; padding: 40px 24px 20px; }
+.welcome-title {
+    font-size: 26px; font-weight: 800; color: var(--text-primary);
+    margin: 12px 0 8px; font-family: 'Outfit', sans-serif;
+}
+.welcome-sub { font-size: 14px; color: var(--text-muted); margin-bottom: 24px; }
+
+/* Suggestion buttons */
+.st-key-sug_wrap [data-testid="stButton"] > button {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-body) !important;
+    border-radius: 20px !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    padding: 8px 16px !important;
+    box-shadow: none !important;
+    transition: all 150ms ease !important;
+}
+.st-key-sug_wrap [data-testid="stButton"] > button:hover {
+    border-color: var(--primary) !important;
+    color: var(--primary-hover) !important;
+    background: #fffbeb !important;
+}
+
+/* --- Floating input card -------------------------------------------------- */
+.st-key-input_card {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 20px !important;
+    padding: 12px 16px 10px !important;
+    box-shadow: var(--shadow-md) !important;
+    margin-top: 8px !important;
+}
+
+/* Topic chip row */
+.st-key-input_card [data-testid="stHorizontalBlock"]:first-of-type {
+    gap: 6px !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    scrollbar-width: none !important;
+    margin-bottom: 10px !important;
+}
+.st-key-input_card [data-testid="stHorizontalBlock"]:first-of-type::-webkit-scrollbar {
+    display: none !important;
+}
+.st-key-input_card [data-testid="stHorizontalBlock"]:first-of-type > div[data-testid="stColumn"] {
+    flex: 0 0 auto !important;
+    min-width: fit-content !important;
+    padding: 0 !important;
+}
+.st-key-input_card [data-testid="stHorizontalBlock"]:first-of-type [data-testid="stButton"] > button {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-muted) !important;
+    border-radius: 20px !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    padding: 4px 14px !important;
+    box-shadow: none !important;
+    transition: all 150ms ease !important;
+    white-space: nowrap !important;
+}
+.st-key-input_card [data-testid="stHorizontalBlock"]:first-of-type [data-testid="stButton"] > button:hover {
+    border-color: var(--primary) !important;
+    color: var(--primary-hover) !important;
+    background: #fffbeb !important;
+}
+
+/* Attach button (📎) next to the chat input */
+.st-key-attach_btn > div > button {
+    width: 38px !important;
+    height: 38px !important;
+    border-radius: 50% !important;
+    border: 1px solid var(--border) !important;
+    background: var(--app-bg) !important;
+    color: var(--text-muted) !important;
+    font-size: 16px !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    flex-shrink: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+/* Chat input field inside card */
+.st-key-input_card [data-testid="stChatInput"] {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+.st-key-input_card [data-testid="stChatInput"] textarea {
+    background: transparent !important;
+    font-size: 14px !important;
+    color: var(--text-primary) !important;
+    border: none !important;
+    outline: none !important;
+    font-family: var(--font) !important;
+}
+.st-key-input_card [data-testid="stChatInputSubmitButton"] button {
+    background: var(--primary-grad) !important;
+    color: #fff !important;
+    border-radius: 50% !important;
+    border: none !important;
+    width: 36px !important;
+    height: 36px !important;
+    box-shadow: 0 2px 8px rgba(245,158,11,0.25) !important;
+}
+
+/* Hint text */
+.input-hint {
+    text-align: center; color: var(--text-muted); font-size: 11px; margin-top: 6px;
+}
+
+/* Misc */
+[data-testid="stChatMessage"] { padding: 0 !important; }
+[data-testid="stMarkdownContainer"] > p { margin: 0 !important; }
+
+/* Prevent white flash during Streamlit reruns */
+html, body { background-color: var(--app-bg) !important; }
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+[data-testid="stMainBlockContainer"] {
+    background-color: var(--app-bg) !important;
+    opacity: 1 !important;
+}
+[data-testid="stSkeleton"] { display: none !important; }
+/* Prevent Streamlit dimming content during rerun */
+.stApp > * { opacity: 1 !important; }
+
+/* Markdown content inside assistant bubble */
+.bubble-assistant p { margin: 4px 0; font-size: 14px; line-height: 1.6; }
+.bubble-assistant ul,
+.bubble-assistant ol { margin: 6px 0 6px 18px; padding: 0; }
+.bubble-assistant li { font-size: 14px; line-height: 1.6; margin: 3px 0; }
+.bubble-assistant strong { font-weight: 600; color: var(--text-primary); }
+.bubble-assistant em { font-style: italic; }
+.bubble-assistant code {
+    font-family: 'Courier New', monospace;
+    background: #f5f5f4; border-radius: 4px;
+    padding: 1px 5px; font-size: 13px;
+}
+.bubble-assistant pre {
+    background: #f5f5f4; border-radius: 8px;
+    padding: 10px 14px; overflow-x: auto; margin: 8px 0;
+}
+.bubble-assistant pre code { background: none; padding: 0; }
+.bubble-assistant blockquote {
+    border-left: 3px solid var(--primary);
+    margin: 6px 0; padding-left: 10px; color: var(--text-muted);
+}
+</style>"""
+
+st.markdown(CSS, unsafe_allow_html=True)
+
+
+
+# =============================================================================
+# SIDEBAR — native Streamlit sidebar
+# =============================================================================
+with st.sidebar:
+    # Brand header
+    logo_26 = _logo_img(28, 28, "8px")
     st.markdown(
-        """
-        <div class="brand">
-            <div class="brand-mark">%s</div>
-            <div>
-                <div class="brand-title">Petlio</div>
-                <div class="brand-subtitle">Your friendly pet care companion</div>
-            </div>
-        </div>
-        """ % sidebar_mark,
+        f'<div class="petlio-brand">{logo_26}<span class="petlio-brand-name">Petlio</span></div>',
         unsafe_allow_html=True,
     )
 
-    if st.button("+ New Chat", use_container_width=True, key="new_chat"):
+    # (RAG status caption intentionally hidden — uploads happen via the 📎 button
+    # next to the chat input.)
+
+    # New Chat
+    if st.button("＋  New Chat", key="btn_new_chat", use_container_width=True):
         _start_new_chat()
         st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.session_state.health_status = {
-        "router": bool(os.getenv("OPENROUTER_API_KEY", "").strip()),
-        "langfuse": bool(st.session_state.langfuse_tracer and st.session_state.langfuse_tracer.is_enabled()),
-        "docs": st.session_state.rag.get_document_count() if st.session_state.rag else 0,
-        "tokens": st.session_state.token_count,
-    }
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-with col_center:
-    st.markdown('<div class="panel center">', unsafe_allow_html=True)
-    center_logo = petlio_logo_svg()
-    center_mark = f'<img src="{center_logo}" alt="Petlio logo" />' if center_logo else "🐾"
-    temperature = st.session_state.temperature
-    max_tokens = st.session_state.max_tokens
-    st.markdown(
-        """
-        <div class="chat-header">
-            <div class="chat-avatar">%s</div>
-            <div>
-                <div class="chat-title">Petlio AI Assistant</div>
-                <div class="chat-subtitle">Your friendly pet care companion</div>
-            </div>
-        </div>
-        """ % center_mark,
-        unsafe_allow_html=True,
+    # Search
+    st.text_input(
+        "Search",
+        key="search_query",
+        placeholder="🔍  Search chats...",
+        label_visibility="collapsed",
     )
 
-    st.markdown('<div class="messages">', unsafe_allow_html=True)
-    if not st.session_state.messages:
+    st.markdown('<div class="sidebar-section-label">Recent Chats</div>', unsafe_allow_html=True)
+
+    # Filtered chat history
+    search_query = st.session_state.get("search_query", "").lower()
+    filtered_sessions = [
+        s for s in st.session_state.chat_sessions
+        if not search_query
+        or search_query in s.get("title", "").lower()
+        or search_query in s.get("preview", "").lower()
+    ]
+
+    if not filtered_sessions:
         st.markdown(
-            """
-            <div class="empty-state">
-                <h2>Ask me anything about pet care</h2>
-                <div>Upload documents in the left panel for personalized answers.</div>
+            '<div style="padding:24px 16px;text-align:center;color:#78716c;font-size:13px;">'
+            'No conversations yet</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        for session in filtered_sessions[:15]:
+            is_active = session["id"] == st.session_state.current_chat_id
+            title = session.get("title") or "New chat"
+            preview = session.get("preview") or "Start a new conversation"
+            time_str = _fmt_friendly_time(session.get("time"))
+            first_letter = title[0].upper() if title else "P"
+            item_key = (
+                f"ch_item_active_{session['id']}"
+                if is_active
+                else f"ch_item_inactive_{session['id']}"
+            )
+            with st.container(key=item_key):
+                st.markdown(
+                    f"""
+                    <div class="chat-hist-item">
+                        <div class="chat-hist-icon">{first_letter}</div>
+                        <div class="chat-hist-details">
+                            <div class="chat-hist-header">
+                                <span class="chat-hist-title">{title}</span>
+                                <span class="chat-hist-time">{time_str}</span>
+                            </div>
+                            <div class="chat-hist-preview">{preview}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button("", key=f"select_{session['id']}", use_container_width=True):
+                    _load_chat_session(session["id"])
+                    st.rerun()
+
+
+
+# =============================================================================
+# MAIN CHAT AREA
+# =============================================================================
+
+# Top header bar
+logo_40 = _logo_img(40, 40, "12px")
+st.markdown(
+    f"""
+    <div class="chat-top-bar">
+        <div class="chat-top-logo">{logo_40}</div>
+        <div style="flex:1;min-width:0;">
+            <div class="chat-top-title">Petlio AI Assistant</div>
+            <div class="chat-top-sub">Your friendly pet care companion</div>
+        </div>
+        <div class="online-dot"></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Scrollable message feed
+with st.container(height=560, border=False):
+    if not st.session_state.messages:
+        logo_big = (
+            f'<img src="{LOGO_DATA}" style="width:72px;height:72px;object-fit:contain;'
+            f'border-radius:18px;box-shadow:0 8px 24px rgba(245,158,11,0.2);'
+            f'display:block;margin:0 auto;" alt="Petlio" />'
+            if LOGO_DATA
+            else '<span style="font-size:64px;display:block;text-align:center;">🐾</span>'
+        )
+        st.markdown(
+            f"""
+            <div class="welcome-wrap">
+                {logo_big}
+                <div class="welcome-title">How can I help with your pet today?</div>
+                <div class="welcome-sub">Ask me anything about pet care, health, nutrition, and more.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        suggestion_prompts = [
+            "What vaccinations does my dog need?",
+            "Best food for a senior cat?",
+            "How to train a puppy?",
+            "Signs my pet is sick?",
+        ]
+        with st.container(key="sug_wrap"):
+            sug_cols = st.columns(len(suggestion_prompts), gap="small")
+            for i, sug in enumerate(suggestion_prompts):
+                with sug_cols[i]:
+                    if st.button(sug, key=f"sug_{i}", use_container_width=True):
+                        _submit_chat_prompt(sug)
     else:
+        bot_avatar_html = (
+            f'<img src="{LOGO_DATA}" style="width:32px;height:32px;'
+            f'object-fit:contain;border-radius:10px;" alt="Petlio" />'
+            if LOGO_DATA
+            else '<span style="font-size:22px;">🐾</span>'
+        )
         for message in st.session_state.messages:
             role = message["role"]
-            avatar = "🙂" if role == "user" else "🐾"
-            with st.chat_message(role, avatar=avatar):
-                st.markdown(f'<div class="bubble {role}">{message["content"]}</div>', unsafe_allow_html=True)
+            content = message["content"]
 
-                if role == "assistant":
-                    if message.get("sources"):
-                        with st.expander(f"📚 Sources ({len(message['sources'])} documents used)"):
-                            for source in sorted(set(message["sources"])):
-                                st.caption(f"• {source}")
+            if role == "user":
+                st.markdown(
+                    f"""
+                    <div class="msg-row user">
+                        <div class="avatar-me">ME</div>
+                        <div class="bubble-user">{content}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                formatted = _format_bubble_content(content)
 
-                    if message.get("agent_steps"):
-                        with st.expander("🧠 Reasoning"):
-                            for step in message["agent_steps"]:
-                                st.markdown(f"**{step.get('thought', 'Thinking')}**")
-                                if step.get("action"):
-                                    st.caption(f"Action: {step['action']}")
-                                if step.get("observation"):
-                                    st.caption(step.get("observation", ""))
+                # Build sources panel — document sources + web search queries
+                sources_html = ""
+                raw_sources = message.get("sources") or []
+                raw_web_searches = message.get("web_searches") or []
+                unique_sources = list(dict.fromkeys(s for s in raw_sources if s and s != "unknown"))
+                if unique_sources or raw_web_searches:
+                    cards = ""
+                    for idx, src in enumerate(unique_sources[:5]):
+                        src_file = src.rsplit("/", 1)[-1] if "/" in src else src
+                        ext = src_file.rsplit(".", 1)[-1].upper() if "." in src_file else "DOC"
+                        display_name = (
+                            src_file.rsplit(".", 1)[0]
+                            .replace("_", " ")
+                            .replace("-", " ")
+                            .title()
+                        )
+                        cards += (
+                            f'<div class="source-card">'
+                            f'<span class="source-index">{idx + 1}</span>'
+                            f'<div class="source-body">'
+                            f'<span class="source-title">{display_name}'
+                            f'<span class="source-domain">{ext}</span></span>'
+                            f'</div></div>'
+                        )
+                    import html as _html_mod
+                    for query in raw_web_searches[:3]:
+                        safe_q = _html_mod.escape(query)
+                        cards += (
+                            f'<div class="source-card">'
+                            f'<span class="source-index" style="font-size:13px;background:#dbeafe;color:#1e40af;">🌐</span>'
+                            f'<div class="source-body">'
+                            f'<span class="source-title">{safe_q}'
+                            f'<span class="source-domain">WEB</span></span>'
+                            f'</div></div>'
+                        )
+                    sources_html = (
+                        f'<div class="sources-panel">'
+                        f'<div class="sources-label">Sources</div>'
+                        f'<div class="sources-list">{cards}</div>'
+                        f'</div>'
+                    )
 
-                    if message.get("rag_used"):
-                        st.caption("🔍 Answer enhanced with uploaded documents")
-    st.markdown('</div>', unsafe_allow_html=True)
+                # Meta pills (the reasoning trace lives in its own expander below)
+                meta_parts: list[str] = []
+                if message.get("rag_used") and not unique_sources and not raw_web_searches:
+                    meta_parts.append('<span class="meta-pill">🔍 RAG</span>')
+                meta_html = (
+                    f'<div class="meta-row">{"".join(meta_parts)}</div>'
+                    if meta_parts
+                    else ""
+                )
 
-    # Quick prompts as a horizontal tab bar
-    quick_prompts = [
-        ("Nutrition", "What should I feed my pet?"),
-        ("Health", "What are common signs my pet is sick?"),
-        ("Training", "Can you help me train my pet?"),
-        ("Care Tips", "Share general pet care tips."),
-        ("Warning Signs", "What warning signs should I watch for?"),
+                st.markdown(
+                    f"""
+                    <div class="msg-row assistant">
+                        <div class="avatar-bot">{bot_avatar_html}</div>
+                        <div class="bubble-assistant">{formatted}{sources_html}{meta_html}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # Reasoning trace — collapsible expander listing every agent step
+                steps = message.get("agent_steps") or []
+                if steps:
+                    with st.expander("🧠 Show reasoning trace", expanded=False):
+                        for step in steps:
+                            iteration = step.get("iteration", "?")
+                            thought = step.get("thought", "")
+                            action = step.get("action", "")
+                            observation = step.get("observation", "")
+                            st.markdown(
+                                f"**Step {iteration}** · {thought}\n\n"
+                                f"- **Action:** `{action}`\n"
+                                f"- **Observation:** {observation}"
+                            )
+
+        # Stream pending prompt inside the message feed
+        if st.session_state.get("pending_chat_prompt"):
+            _process_pending_prompt()
+
+
+# =============================================================================
+# FLOATING INPUT CARD
+# =============================================================================
+with st.container(key="input_card"):
+    pill_chips = [
+        ("nutrition", "🥗 Nutrition"),
+        ("health", "🏥 Health"),
+        ("training", "🎓 Training"),
+        ("care", "🛁 Care Tips"),
+        ("warnings", "⚠️ Warnings"),
     ]
-    
     key_map = {
-        'nutrition': 'What should I feed my pet?',
-        'health': 'What are common signs my pet is sick?',
-        'training': 'Can you help me train my pet?',
-        'care': 'Share general pet care tips.',
-        'warnings': 'What warning signs should I watch for?',
+        "nutrition": "Tell me about pet Nutrition",
+        "health": "Tell me about pet Health",
+        "training": "Tell me about pet Training",
+        "care": "Tell me about pet Care Tips",
+        "warnings": "Tell me about pet Warning Signs",
     }
-    chips = [
-        ('nutrition', '🥗 Nutrition'),
-        ('health', '❤️ Health'),
-        ('training', '🎓 Training'),
-        ('care', '💡 Care Tips'),
-        ('warnings', '⚠️ Warning Signs'),
-    ]
+    pill_cols = st.columns(len(pill_chips), gap="small")
+    for col, (k, label) in zip(pill_cols, pill_chips):
+        with col:
+            if st.button(label, key=f"pill_{k}", use_container_width=True):
+                _submit_chat_prompt(key_map[k])
 
-    with st.container():
-        st.markdown('<div class="chip-container-marker"></div>', unsafe_allow_html=True)
-        chip_cols = st.columns(len(chips), gap="small")
-        for col, (k, label) in zip(chip_cols, chips):
-            with col:
-                if st.button(label, key=f"chip_{k}", use_container_width=True):
-                    _submit_chat_prompt(key_map[k])
-
-        if st.session_state.show_upload_picker:
-            st.markdown(
-                "<div style='padding:0 20px 10px 20px;'>"
-                "<div class='expander-card' style='padding:14px 14px 10px;'>"
-                "<div style='font-weight:700;margin-bottom:6px;'>Upload docs</div>"
-                "<div style='color:#6b7280;font-size:0.82rem;margin-bottom:10px;'>PDF or TXT files are indexed into RAG.</div>"
-                "</div></div>",
-                unsafe_allow_html=True,
-            )
-            uploaded = st.file_uploader(
-                "Upload PDF or TXT",
-                type=["pdf", "txt"],
-                label_visibility="collapsed",
-                key=f"upload_{st.session_state.current_chat_id}",
-            )
-            if uploaded:
-                try:
-                    _handle_document_upload(uploaded)
-                    st.session_state.show_upload_picker = False
-                    st.rerun()
-                except Exception as exc:
-                    logger.exception("Upload failed")
-                    st.error(f"❌ {exc}")
-
-        st.markdown('<div class="composer-footer">', unsafe_allow_html=True)
-        footer_cols = st.columns([0.08, 0.92], vertical_alignment="center")
-        
-        with footer_cols[0]:
-            if st.button("＋", key="attach_docs", help="Upload docs", use_container_width=True):
+    inp_cols = st.columns([0.06, 0.94], vertical_alignment="center")
+    with inp_cols[0]:
+        with st.container(key="attach_btn"):
+            if st.button("📎", key="attach_docs", help="Upload a PDF or TXT for RAG", use_container_width=True):
                 st.session_state.show_upload_picker = not st.session_state.show_upload_picker
                 st.rerun()
-        
-        with footer_cols[1]:
-            user_input = st.chat_input("Ask me anything about pet care...", key="chat_input")
+    with inp_cols[1]:
+        user_input = st.chat_input("Ask me anything about pet care...", key="chat_input")
 
-        if user_input:
-            _submit_chat_prompt(user_input)
+    if st.session_state.show_upload_picker:
+        uploaded = st.file_uploader(
+            "Upload a PDF or TXT to add to the knowledge base",
+            type=["pdf", "txt"],
+            label_visibility="collapsed",
+            key=f"upload_{st.session_state.current_chat_id}",
+        )
+        if uploaded:
+            try:
+                _handle_document_upload(uploaded)
+                st.session_state.show_upload_picker = False
+                st.rerun()
+            except Exception as exc:
+                logger.exception("Upload failed")
+                st.error(f"❌ {exc}")
 
-        st.markdown('</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with col_right:
-    st.markdown('<div class="panel right">', unsafe_allow_html=True)
     st.markdown(
-        """
-        <div class="right-head">
-            <div style="font-size:1rem;font-weight:800;color:#111827;">Pet Care Chats</div>
-        </div>
-        """,
+        '<div class="input-hint">Press Enter to send · Shift + Enter for new line</div>',
         unsafe_allow_html=True,
     )
 
-    for session in st.session_state.chat_sessions[:10]:
-        history_clicked = st.button(
-            session.get("preview") or session.get("title") or "New chat",
-            key=f"history_{session['id']}",
-            use_container_width=True,
-        )
-        if history_clicked:
-            _load_chat_session(session["id"])
-            st.rerun()
-
-        st.caption(session.get("time", ""))
-
-    st.markdown("</div>", unsafe_allow_html=True)
+if user_input:
+    _submit_chat_prompt(user_input)
