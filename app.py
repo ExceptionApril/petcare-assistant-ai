@@ -335,8 +335,7 @@ def _handle_document_upload(uploaded_file) -> None:
             )
             
             if chunks_added > 0:
-                st.success(f"✅ {uploaded_file.name} indexed ({chunks_added} chunks)")
-                st.info(f"📚 Knowledge base now has {doc_count} document(s): {', '.join(sources)}")
+                logger.info(f"Document successfully indexed: {uploaded_file.name}")
             else:
                 st.warning(f"⚠️ No content extracted from {uploaded_file.name}")
     except Exception as exc:

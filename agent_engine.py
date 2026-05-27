@@ -238,7 +238,7 @@ Instructions: Use the above documents to answer the user's question. If document
 
         messages = [
             {"role": "system", "content": system_prompt},
-            *conversation_history[-4:],  # Last 4 messages only
+            *conversation_history[-12:],  # ~6 turns of context for recall
             {"role": "user", "content": user_message}
         ]
         
@@ -376,7 +376,7 @@ Instructions: Use the above documents to answer the user's question. If document
         )
         messages = [
             {"role": "system", "content": system_prompt},
-            *history[-4:],
+            *history[-12:],
             {"role": "user", "content": final_user_content},
         ]
 
