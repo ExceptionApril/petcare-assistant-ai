@@ -418,8 +418,8 @@ def _process_pending_prompt() -> None:
                     parts = [
                         f"[Document {i} — Source: {c['source']} (relevance: {c['similarity']})]:\n{c['content']}"
                         for i, c in enumerate(retrieved_chunks, 1)
-                ]
-                rag_context = "\n\n---\n\n".join(parts)
+                    ]
+                    rag_context = "\n\n---\n\n".join(parts)
             _trace_rag(st.session_state.langfuse_tracer, prompt_text, retrieved_chunks)
     except Exception as exc:
         logger.error("RAG error: %s", exc)
@@ -1081,16 +1081,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # RAG Status Display
-    if st.session_state.get("rag"):
-        doc_count = st.session_state.rag.get_document_count()
-        if doc_count > 0:
-            sources = st.session_state.rag.get_sources()
-            st.success(f"📚 **{doc_count}** document(s) indexed\n{chr(10).join([f'• {s}' for s in sources])}")
-        else:
-            st.info("📄 Upload documents to enhance responses")
-    else:
-        st.warning("⚠️ RAG system unavailable")
+
 
     # New Chat
     if st.button("＋  New Chat", key="btn_new_chat", use_container_width=True):
