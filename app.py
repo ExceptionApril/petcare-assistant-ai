@@ -1079,6 +1079,33 @@ with st.sidebar:
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
+    # RAG Status & Uploaded Documents
+    st.markdown('<div class="sidebar-section-label">📚 RAG Knowledge Base</div>', unsafe_allow_html=True)
+    try:
+        if st.session_state.get("rag"):
+            doc_count = st.session_state.rag.get_document_count()
+            sources = st.session_state.rag.get_sources()
+            
+            # Show RAG status
+            if doc_count > 0:
+                st.success(f"✅ RAG Active · {doc_count} document(s)", icon="📚")
+                
+                # Show uploaded documents
+                if sources:
+                    with st.expander(f"📄 Documents ({len(sources)})"):
+                        for source in sources:
+                            st.caption(f"📄 {source}")
+            else:
+                st.info("No documents uploaded yet", icon="📚")
+                st.caption("Upload PDFs or text files to enable document retrieval")
+        else:
+            st.warning("RAG system not available", icon="⚠️")
+    except Exception as e:
+        logger.error(f"RAG sidebar error: {e}")
+        st.warning("RAG status unavailable", icon="⚠️")
+
+    st.divider()
+
     # Search
     st.text_input(
         "Search",
