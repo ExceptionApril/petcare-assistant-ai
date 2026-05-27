@@ -41,8 +41,8 @@ COLLECTION_NAME = "petcare_docs"
 CHUNK_SIZE      = 300    # smaller chunks = more focused semantic match
 CHUNK_OVERLAP   = 40
 TOP_K           = 5      # retrieve more candidates since chunks are smaller
-MIN_SIMILARITY  = -0.2   # include weakly-relevant chunks (near-zero cosine similarity);
-                          # only filter strongly anti-correlated content (< -0.2)
+MIN_SIMILARITY  = 0.1    # Only include chunks with at least 10% similarity
+                          # (excludes noise, keeps contextually relevant documents)
 
 
 class RAGEngine:

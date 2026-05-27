@@ -466,12 +466,26 @@ def _process_pending_prompt() -> None:
     # Clear the live placeholder — the message will re-render through the normal loop on rerun
     response_placeholder.empty()
 
-    # If the response was blocked by safety checks, use fallback
+    # If the response was blocked by safety checks, use diagnostic fallback
     if not full_response.strip() or blocked:
-        full_response = (
-            "I'm sorry, I can only help with pet care-related questions. "
-            "Please ask something about your pet's health, nutrition, training, or care."
-        )
+        # Provide helpful context about what went wrong
+        if doc_count == 0 and st.session_state.rag:
+            fallback_msg = (
+                "📌 **Note:** You haven't uploaded any documents yet. "
+                "Try uploading a PDF or text file about your pet for more personalized answers. "
+                "Or ask me a general pet care question!"
+            )
+        elif len(retrieved_chunks) == 0 and doc_count > 0:
+            fallback_msg = (
+                "🔍 **No matching documents found.** Your documents don't seem to cover this topic. "
+                "Try rephrasing your question, or ask about general pet care."
+            )
+        else:
+            fallback_msg = (
+                "I'm sorry, I can only help with pet care-related questions. "
+                "Please ask something about your pet's health, nutrition, training, or care."
+            )
+        full_response = fallback_msg
 
     _trace_llm(
         st.session_state.get("langfuse_tracer"),
