@@ -50,6 +50,7 @@ Thumbs.db
 .env
 .chroma_db/
 .chroma_db_test/
+chroma_db/
 
 # Local development artifacts — do NOT ship to Streamlit Cloud
 .venv/
