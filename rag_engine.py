@@ -46,6 +46,10 @@ class RAGEngine:
     def __init__(self):
         logger.info(f"Initializing RAG Engine (ONNX embeddings)... [path: {CHROMA_PATH}]")
         self._ef = DefaultEmbeddingFunction()
+        
+        # In-memory backup storage (for Streamlit Cloud reliability)
+        self._memory_store = {}  # format: {chunk_id: {"text": ..., "source": ..., "embedding": ...}}
+        self._sources = set()
 
         try:
             self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
@@ -57,7 +61,7 @@ class RAGEngine:
             self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
 
         self.collection = self._get_or_create_collection()
-        logger.info("RAG Engine ready. %d chunks in store.", self.collection.count())
+        logger.info("RAG Engine ready. ChromaDB: %d chunks in store.", self.collection.count())
 
     # ── Collection management ──────────────────────────────────────────────────
 
@@ -149,69 +153,128 @@ class RAGEngine:
         if not chunks:
             return 0
         logger.info("Embedding %d chunks for '%s'...", len(chunks), source)
-        # Upsert without pre-computed embeddings — collection EF handles them
-        self.collection.upsert(
-            ids=[c["id"] for c in chunks],
-            documents=[c["text"] for c in chunks],
-            metadatas=[{"source": c["source"], "chunk_index": c["chunk_index"]} for c in chunks],
-        )
-        logger.info("Ingested %d chunks from '%s'. Total: %d", len(chunks), source, self.collection.count())
+        
+        # Store in ChromaDB (primary)
+        try:
+            self.collection.upsert(
+                ids=[c["id"] for c in chunks],
+                documents=[c["text"] for c in chunks],
+                metadatas=[{"source": c["source"], "chunk_index": c["chunk_index"]} for c in chunks],
+            )
+        except Exception as e:
+            logger.warning(f"ChromaDB upsert failed: {e} — falling back to memory-only")
+        
+        # ALSO store in memory (backup for Streamlit Cloud)
+        for chunk in chunks:
+            try:
+                # Pre-compute embedding for memory storage
+                embedding = self._ef([chunk["text"]])[0]
+                self._memory_store[chunk["id"]] = {
+                    "text": chunk["text"],
+                    "source": chunk["source"],
+                    "embedding": embedding,
+                    "chunk_index": chunk["chunk_index"]
+                }
+                self._sources.add(chunk["source"])
+            except Exception as e:
+                logger.warning(f"Failed to embed chunk for memory: {e}")
+        
+        logger.info(f"Ingested {len(chunks)} chunks from '{source}'. Total: ChromaDB={self.collection.count()}, Memory={len(self._memory_store)}")
         return len(chunks)
 
     # ── Retrieval ──────────────────────────────────────────────────────────────
 
     def retrieve(self, query: str, k: int = TOP_K) -> list:
-        """Return the k most relevant chunks for the query."""
+        """Return the k most relevant chunks. Try ChromaDB first, fall back to memory."""
         doc_count = self.collection.count()
-        if doc_count == 0:
-            logger.debug("No documents in collection")
+        memory_count = len(self._memory_store)
+        total_docs = max(doc_count, memory_count)
+        
+        if total_docs == 0:
+            logger.debug("No documents in collection or memory")
             return []
         
-        try:
-            n = min(k, doc_count)
-            logger.info(f"Querying: '{query[:80]}...' (k={n}, docs={doc_count})")
-            
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=n,
-                include=["documents", "metadatas", "distances"],
-            )
-            
-            # Detailed logging of what we got back
-            logger.debug(f"Query response structure: documents={bool(results['documents'])}, "
-                        f"metadatas={bool(results['metadatas'])}, distances={bool(results['distances'])}")
-            
-            # Check if we got results
-            if not results["documents"] or not results["documents"][0]:
-                logger.warning(f"Query returned 0 results despite {doc_count} docs stored")
-                logger.debug(f"Full response: {results}")
-                return []
-            
-            doc_results = results["documents"][0]
-            meta_results = results["metadatas"][0]
-            dist_results = results["distances"][0]
-            
-            logger.info(f"Query got {len(doc_results)} results")
-            
-            chunks = []
-            for i, (doc, meta, dist) in enumerate(zip(doc_results, meta_results, dist_results)):
-                if not doc or not doc.strip():
-                    logger.warning(f"Result {i}: empty document")
-                    continue
-                chunk = {
-                    "content": doc,
-                    "source": meta.get("source", "unknown") if meta else "unknown",
-                    "similarity": round(1 - dist, 3),
-                }
-                chunks.append(chunk)
-                if i < 3:  # Log first 3
-                    logger.debug(f"  Result {i}: source={chunk['source']}, similarity={chunk['similarity']}, len={len(doc)}")
-            
-            logger.info(f"Retrieved {len(chunks)} valid chunks with similarities: {[c['similarity'] for c in chunks]}")
-            return chunks
-        except Exception as e:
-            logger.error(f"Retrieval error for query '{query[:50]}...': {e}", exc_info=True)
-            return []
+        logger.info(f"Retrieve: '{query[:80]}...' (k={k}, ChromaDB={doc_count}, Memory={memory_count})")
+        
+        # Try ChromaDB first
+        if doc_count > 0:
+            try:
+                n = min(k, doc_count)
+                results = self.collection.query(
+                    query_texts=[query],
+                    n_results=n,
+                    include=["documents", "metadatas", "distances"],
+                )
+                
+                if results["documents"] and results["documents"][0]:
+                    doc_results = results["documents"][0]
+                    meta_results = results["metadatas"][0]
+                    dist_results = results["distances"][0]
+                    
+                    chunks = []
+                    for doc, meta, dist in zip(doc_results, meta_results, dist_results):
+                        if doc and doc.strip():
+                            chunk = {
+                                "content": doc,
+                                "source": meta.get("source", "unknown") if meta else "unknown",
+                                "similarity": round(1 - dist, 3),
+                            }
+                            chunks.append(chunk)
+                    
+                    if chunks:
+                        logger.info(f"ChromaDB returned {len(chunks)} chunks")
+                        return chunks
+                    else:
+                        logger.debug("ChromaDB returned empty results")
+                else:
+                    logger.warning(f"ChromaDB query returned 0 results despite {doc_count} docs")
+            except Exception as e:
+                logger.warning(f"ChromaDB query failed: {e} — trying memory fallback")
+        
+        # Fallback: use in-memory search
+        if memory_count > 0:
+            logger.info(f"Falling back to in-memory search ({memory_count} chunks)")
+            try:
+                # Embed the query
+                query_embedding = self._ef([query])[0]
+                
+                # Compute similarity to all stored chunks
+                similarities = []
+                for chunk_id, chunk_data in self._memory_store.items():
+                    # Simple cosine similarity
+                    embedding = chunk_data["embedding"]
+                    if embedding:
+                        # Dot product
+                        dot_product = sum(a * b for a, b in zip(query_embedding, embedding))
+                        # Norms
+                        norm_q = sum(x ** 2 for x in query_embedding) ** 0.5
+                        norm_e = sum(x ** 2 for x in embedding) ** 0.5
+                        if norm_q > 0 and norm_e > 0:
+                            sim = dot_product / (norm_q * norm_e)
+                        else:
+                            sim = 0
+                        similarities.append((chunk_id, sim))
+                
+                # Sort by similarity and take top-k
+                similarities.sort(key=lambda x: x[1], reverse=True)
+                top_k = similarities[:k]
+                
+                chunks = []
+                for chunk_id, sim in top_k:
+                    chunk_data = self._memory_store[chunk_id]
+                    chunks.append({
+                        "content": chunk_data["text"],
+                        "source": chunk_data["source"],
+                        "similarity": round((sim + 1) / 2, 3),  # Normalize to 0-1
+                    })
+                
+                logger.info(f"Memory search returned {len(chunks)} chunks with similarities: {[c['similarity'] for c in chunks]}")
+                return chunks
+            except Exception as e:
+                logger.error(f"Memory search failed: {e}", exc_info=True)
+        
+        logger.warning(f"No results from ChromaDB or memory despite {total_docs} docs")
+        return []
 
     def get_context_string(self, query: str, k: int = TOP_K) -> str:
         """Retrieve chunks and format them as a context string for the LLM."""
@@ -227,45 +290,67 @@ class RAGEngine:
     # ── Stats / Management ─────────────────────────────────────────────────────
 
     def get_document_count(self) -> int:
+        """Return total document count from ChromaDB + memory."""
         try:
-            return self.collection.count()
+            chroma_count = self.collection.count()
         except Exception:
-            return 0
+            chroma_count = 0
+        
+        memory_count = len(self._memory_store)
+        total = max(chroma_count, memory_count)  # Use max (same docs in both)
+        return total
 
     def get_sources(self) -> list:
+        """Return sorted list of sources from both ChromaDB and memory."""
+        sources = set()
+        
+        # From ChromaDB
         try:
-            if self.collection.count() == 0:
-                return []
-            results = self.collection.get(include=["metadatas"])
-            return sorted({m["source"] for m in results["metadatas"]})
+            if self.collection.count() > 0:
+                results = self.collection.get(include=["metadatas"])
+                sources.update({m["source"] for m in results["metadatas"]})
         except Exception:
-            return []
+            pass
+        
+        # From memory
+        sources.update(self._sources)
+        
+        return sorted(list(sources))
 
     def get_debug_info(self) -> dict:
-        """Return diagnostic info about what's stored in the collection."""
+        """Return diagnostic info about what's stored (ChromaDB + Memory)."""
+        chroma_info = {"count": 0, "chunks": [], "status": "empty"}
         try:
             count = self.collection.count()
-            if count == 0:
-                return {"count": 0, "chunks": [], "status": "empty"}
-            
-            # Get first 3 chunks to inspect
-            results = self.collection.get(limit=3, include=["documents", "metadatas"])
-            chunks_info = []
-            for doc, meta in zip(results["documents"], results["metadatas"]):
-                chunks_info.append({
-                    "source": meta.get("source", "unknown"),
-                    "content_len": len(doc) if doc else 0,
-                    "content_preview": (doc[:100] if doc else "")
-                })
-            
-            return {
-                "count": count,
-                "chunks": chunks_info,
-                "sources": sorted({m["source"] for m in results["metadatas"]}),
-                "status": "ok"
-            }
+            if count > 0:
+                results = self.collection.get(limit=3, include=["documents", "metadatas"])
+                chunks_info = []
+                for doc, meta in zip(results["documents"], results["metadatas"]):
+                    chunks_info.append({
+                        "source": meta.get("source", "unknown"),
+                        "content_len": len(doc) if doc else 0,
+                        "content_preview": (doc[:100] if doc else "")
+                    })
+                chroma_info = {
+                    "count": count,
+                    "chunks": chunks_info,
+                    "sources": sorted({m["source"] for m in results["metadatas"]}),
+                    "status": "ok"
+                }
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            chroma_info = {"status": "error", "error": str(e)}
+        
+        memory_info = {
+            "count": len(self._memory_store),
+            "sources": sorted(list(self._sources)),
+            "status": "ok" if self._memory_store else "empty"
+        }
+        
+        return {
+            "chromadb": chroma_info,
+            "memory": memory_info,
+            "total_count": max(chroma_info.get("count", 0), memory_info.get("count", 0))
+        }
 
     def clear(self):
         try:
@@ -274,6 +359,9 @@ class RAGEngine:
                 name=COLLECTION_NAME,
                 embedding_function=self._ef,
             )
-            logger.info("Vector store cleared.")
+            # Also clear memory
+            self._memory_store.clear()
+            self._sources.clear()
+            logger.info("Vector store and memory cache cleared.")
         except Exception as e:
             logger.error("Clear error: %s", e)
