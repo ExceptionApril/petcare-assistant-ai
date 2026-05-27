@@ -21,10 +21,10 @@ CHUNK_SIZE      = 500
 CHUNK_OVERLAP   = 50
 TOP_K           = 3
 # ONNX MiniLM with L2 distance on normalized vectors → distance ∈ [0, 2].
-# similarity = 1 - distance.  Empirically: relevant chunks land >= 0.30,
-# random/irrelevant queries score < 0.20.  Set the floor accordingly so
-# the assistant doesn't surface cat.pdf for "what's my cat's name?".
-MIN_SIMILARITY  = 0.30
+# similarity = 1 - distance.  Empirically: relevant chunks land >= 0.15-0.20,
+# random/irrelevant queries score < 0.10.  Set the floor accordingly so
+# the assistant can retrieve relevant documents while filtering truly irrelevant ones.
+MIN_SIMILARITY  = 0.15
 
 
 def _ensure_writable(path: str) -> bool:
