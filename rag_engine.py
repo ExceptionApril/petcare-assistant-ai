@@ -69,11 +69,13 @@ class RAGEngine:
         logger.info("Initializing RAG Engine (ONNX embeddings)...")
         self._ef = DefaultEmbeddingFunction()
         self._is_healthy = False
+        self.chroma = None
+        self.collection = None
 
         # Ensure the path is writable before initializing ChromaDB
         if not _ensure_writable(CHROMA_PATH):
-            logger.error("Cannot create writable ChromaDB path at %s", CHROMA_PATH)
-            raise RuntimeError(f"ChromaDB path {CHROMA_PATH} is not writable")
+            logger.error("Cannot create writable ChromaDB path at %s. RAG will be disabled.", CHROMA_PATH)
+            return
 
         try:
             self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
@@ -89,16 +91,24 @@ class RAGEngine:
                 self.chroma = chromadb.PersistentClient(path=CHROMA_PATH)
                 self._is_healthy = True
             except Exception as e2:
-                logger.error("ChromaDB reset failed: %s", e2)
-                raise RuntimeError(f"Failed to initialize ChromaDB: {e2}")
+                logger.error("ChromaDB reset failed: %s. RAG will be disabled.", e2)
+                return
 
-        self.collection = self._get_or_create_collection()
-        logger.info("RAG Engine ready. %d chunks in store.", self.collection.count())
+        try:
+            self.collection = self._get_or_create_collection()
+            logger.info("RAG Engine ready. %d chunks in store.", self.collection.count())
+        except Exception as e:
+            logger.error("Failed to initialize collection: %s. RAG will be disabled.", e)
+            self.chroma = None
+            self.collection = None
 
     # ── Collection management ──────────────────────────────────────────────────
 
     def _get_or_create_collection(self):
         """Get/create collection, clearing it if stored embeddings have wrong dim."""
+        if not self.chroma:
+            logger.error("ChromaDB client not initialized")
+            return None
         try:
             col = self.chroma.get_or_create_collection(
                 name=COLLECTION_NAME,
@@ -127,10 +137,14 @@ class RAGEngine:
                 self.chroma.delete_collection(COLLECTION_NAME)
             except Exception:
                 pass
-            return self.chroma.create_collection(
-                name=COLLECTION_NAME,
-                embedding_function=self._ef,
-            )
+            try:
+                return self.chroma.create_collection(
+                    name=COLLECTION_NAME,
+                    embedding_function=self._ef,
+                )
+            except Exception as e2:
+                logger.error("Failed to create collection: %s", e2)
+                return None
 
     # ── Ingestion ──────────────────────────────────────────────────────────────
 
@@ -181,6 +195,9 @@ class RAGEngine:
         return chunks
 
     def _ingest_text(self, text: str, source: str) -> int:
+        if not self.collection:
+            logger.warning("RAG collection not available. Documents cannot be ingested.")
+            return 0
         chunks = self._chunk_text(text, source)
         if not chunks:
             return 0
@@ -202,6 +219,9 @@ class RAGEngine:
                     _ensure_writable(CHROMA_PATH)
                     # Reinitialize the collection
                     self.collection = self._get_or_create_collection()
+                    if not self.collection:
+                        logger.error("Could not reinitialize collection after permission fix")
+                        return 0
                     # Retry the upsert
                     self.collection.upsert(
                         ids=[c["id"] for c in chunks],
@@ -212,10 +232,10 @@ class RAGEngine:
                     return len(chunks)
                 except Exception as e2:
                     logger.error("Recovery failed: %s", e2)
-                    raise
+                    return 0
             else:
                 logger.error("Ingestion error: %s", e)
-                raise
+                return 0
 
     # ── Retrieval ──────────────────────────────────────────────────────────────
 
@@ -226,6 +246,9 @@ class RAGEngine:
         (e.g. asking to recall a name) don't get cat.pdf appended as a
         "source".  Pass ``min_similarity=0`` to disable filtering.
         """
+        if not self.collection:
+            logger.warning("RAG collection not available")
+            return []
         if self.collection.count() == 0:
             return []
         try:
@@ -298,12 +321,16 @@ class RAGEngine:
     # ── Stats / Management ─────────────────────────────────────────────────────
 
     def get_document_count(self) -> int:
+        if not self.collection:
+            return 0
         try:
             return self.collection.count()
         except Exception:
             return 0
 
     def get_sources(self) -> list:
+        if not self.collection:
+            return []
         try:
             if self.collection.count() == 0:
                 return []
@@ -314,6 +341,8 @@ class RAGEngine:
 
     def is_healthy(self) -> bool:
         """Check if the RAG engine is healthy and can perform operations."""
+        if not self.collection or not self.chroma:
+            return False
         try:
             # Test a simple read operation
             count = self.collection.count()
@@ -323,6 +352,9 @@ class RAGEngine:
             return False
 
     def clear(self):
+        if not self.chroma or not self.collection:
+            logger.warning("RAG not initialized, cannot clear")
+            return
         try:
             self.chroma.delete_collection(COLLECTION_NAME)
             self.collection = self.chroma.get_or_create_collection(
