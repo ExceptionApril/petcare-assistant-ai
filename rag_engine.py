@@ -27,12 +27,11 @@ def _get_chroma_path():
     # Local development: use ./chroma_db
     return "./chroma_db"
 
-CHROMA_PATH      = _get_chroma_path()
-COLLECTION_NAME  = "petcare_docs"
-CHUNK_SIZE       = 500
-CHUNK_OVERLAP    = 50
-TOP_K            = 3
-MIN_SIMILARITY   = 0.15
+CHROMA_PATH     = _get_chroma_path()
+COLLECTION_NAME = "petcare_docs"
+CHUNK_SIZE      = 500
+CHUNK_OVERLAP   = 50
+TOP_K           = 3
 
 
 class RAGEngine:
@@ -215,13 +214,10 @@ class RAGEngine:
                     chunks = []
                     for doc, meta, dist in zip(doc_results, meta_results, dist_results):
                         if doc and doc.strip():
-                            sim = round(1 - dist, 3)
-                            if sim < MIN_SIMILARITY:
-                                continue
                             chunk = {
                                 "content": doc,
                                 "source": meta.get("source", "unknown") if meta else "unknown",
-                                "similarity": sim,
+                                "similarity": round(1 - dist, 3),
                             }
                             chunks.append(chunk)
                     
@@ -265,14 +261,11 @@ class RAGEngine:
                 
                 chunks = []
                 for chunk_id, sim in top_k:
-                    normalized = round((sim + 1) / 2, 3)  # cosine [-1,1] → [0,1]
-                    if normalized < MIN_SIMILARITY:
-                        continue
                     chunk_data = self._memory_store[chunk_id]
                     chunks.append({
                         "content": chunk_data["text"],
                         "source": chunk_data["source"],
-                        "similarity": normalized,
+                        "similarity": round((sim + 1) / 2, 3),  # cosine [-1,1] → [0,1]
                     })
                 
                 logger.info(f"Memory search returned {len(chunks)} chunks with similarities: {[c['similarity'] for c in chunks]}")
