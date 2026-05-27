@@ -114,7 +114,7 @@ class RAGEngine:
             if col.count() > 0:
                 sample = col.get(limit=1, include=["embeddings"])
                 raw = sample.get("embeddings")
-                stored_dim = len(raw[0]) if raw and len(raw) > 0 else 0
+                stored_dim = len(raw[0]) if raw is not None and len(raw) > 0 else 0
                 expected_dim = len(self._ef(["probe"])[0])
                 if stored_dim and stored_dim != expected_dim:
                     logger.warning("Dim mismatch (%d vs %d) — clearing.", stored_dim, expected_dim)
