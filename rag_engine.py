@@ -13,7 +13,21 @@ from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 
 logger = logging.getLogger(__name__)
 
-CHROMA_PATH     = os.getenv("CHROMA_DB_PATH", "./chroma_db")
+# Auto-detect path: use writable location for the environment
+def _get_chroma_path():
+    """Get appropriate ChromaDB path for local or Streamlit Cloud."""
+    explicit = os.getenv("CHROMA_DB_PATH", "").strip()
+    if explicit:
+        return explicit
+    
+    # Streamlit Cloud detection - use /tmp which is writable during session
+    if os.path.exists("/mount/src"):
+        return "/tmp/chroma_db"
+    
+    # Local development: use ./chroma_db
+    return "./chroma_db"
+
+CHROMA_PATH     = _get_chroma_path()
 COLLECTION_NAME = "petcare_docs"
 CHUNK_SIZE      = 500
 CHUNK_OVERLAP   = 50
@@ -30,7 +44,7 @@ class RAGEngine:
     """
 
     def __init__(self):
-        logger.info("Initializing RAG Engine (ONNX embeddings)...")
+        logger.info(f"Initializing RAG Engine (ONNX embeddings)... [path: {CHROMA_PATH}]")
         self._ef = DefaultEmbeddingFunction()
 
         try:
@@ -148,15 +162,26 @@ class RAGEngine:
 
     def retrieve(self, query: str, k: int = TOP_K) -> list:
         """Return the k most relevant chunks for the query."""
-        if self.collection.count() == 0:
+        doc_count = self.collection.count()
+        if doc_count == 0:
+            logger.debug("No documents in collection")
             return []
+        
         try:
-            n = min(k, self.collection.count())
+            n = min(k, doc_count)
+            logger.debug(f"Querying: '{query[:50]}...' (k={n}, docs={doc_count})")
+            
             results = self.collection.query(
                 query_texts=[query],
                 n_results=n,
                 include=["documents", "metadatas", "distances"],
             )
+            
+            # Check if we got results
+            if not results["documents"] or not results["documents"][0]:
+                logger.warning(f"Query returned 0 results despite {doc_count} docs: '{query[:50]}...'")
+                return []
+            
             chunks = [
                 {
                     "content": doc,
@@ -169,9 +194,10 @@ class RAGEngine:
                     results["distances"][0],
                 )
             ]
+            logger.debug(f"Retrieved {len(chunks)} chunks with similarities: {[c['similarity'] for c in chunks]}")
             return chunks  # return top-k; similarity shown but not filtered
         except Exception as e:
-            logger.error("Retrieval error: %s", e)
+            logger.error(f"Retrieval error for query '{query[:50]}...': {e}", exc_info=True)
             return []
 
     def get_context_string(self, query: str, k: int = TOP_K) -> str:
