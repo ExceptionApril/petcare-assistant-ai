@@ -278,15 +278,6 @@ def _handle_document_upload(uploaded_file) -> None:
             chunks_added = st.session_state.rag.ingest_bytes(file_bytes, uploaded_file.name)
             logger.info(f"Ingest result: {chunks_added} chunks added")
             
-            # Verify it was actually stored
-            if chunks_added > 0:
-                is_persisted = st.session_state.rag.verify_document(uploaded_file.name)
-                logger.info(f"Document persistence check: {is_persisted}")
-                
-                if not is_persisted:
-                    st.warning(f"⚠️ Document was processed but may not have persisted to storage. Chunks: {chunks_added}")
-                    logger.error(f"CRITICAL: Document '{uploaded_file.name}' was ingested but not found in verification!")
-            
             # Get updated counts
             doc_count = st.session_state.rag.get_document_count()
             sources = st.session_state.rag.get_sources()
@@ -372,7 +363,6 @@ def _process_pending_prompt() -> None:
                 
                 if not retrieved_chunks:
                     logger.warning(f"⚠️ ALERT: RAG returned 0 chunks despite {doc_count} documents!")
-                    logger.warning(f"RAG status: {st.session_state.rag.get_status()}")
                 
                 sources_used = [
                     c.get("source", "")
@@ -389,13 +379,7 @@ def _process_pending_prompt() -> None:
             _trace_rag(st.session_state.get("langfuse_tracer"), prompt_text, retrieved_chunks)
     except Exception as exc:
         logger.error(f"❌ RAG error: {exc}", exc_info=True)
-        # Safely try to get RAG status for diagnostics
-        try:
-            if st.session_state.rag and hasattr(st.session_state.rag, 'get_status'):
-                logger.error(f"RAG status: {st.session_state.rag.get_status()}")
-        except:
-            pass
-        # If RAG fails with readonly/permission issues, mark it as unhealthy
+        # If RAG fails, continue without RAG context
         if st.session_state.rag and ("readonly" in str(exc).lower() or "permission" in str(exc).lower()):
             logger.warning("RAG marked unhealthy due to permission issues")
             st.session_state.rag = None
