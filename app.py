@@ -363,6 +363,9 @@ def _process_pending_prompt() -> None:
                 
                 if not retrieved_chunks:
                     logger.warning(f"⚠️ ALERT: RAG returned 0 chunks despite {doc_count} documents!")
+                    # Log diagnostic info
+                    debug_info = st.session_state.rag.get_debug_info()
+                    logger.warning(f"   Debug info: {debug_info}")
                 
                 sources_used = [
                     c.get("source", "")

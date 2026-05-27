@@ -169,7 +169,7 @@ class RAGEngine:
         
         try:
             n = min(k, doc_count)
-            logger.debug(f"Querying: '{query[:50]}...' (k={n}, docs={doc_count})")
+            logger.info(f"Querying: '{query[:80]}...' (k={n}, docs={doc_count})")
             
             results = self.collection.query(
                 query_texts=[query],
@@ -177,25 +177,38 @@ class RAGEngine:
                 include=["documents", "metadatas", "distances"],
             )
             
+            # Detailed logging of what we got back
+            logger.debug(f"Query response structure: documents={bool(results['documents'])}, "
+                        f"metadatas={bool(results['metadatas'])}, distances={bool(results['distances'])}")
+            
             # Check if we got results
             if not results["documents"] or not results["documents"][0]:
-                logger.warning(f"Query returned 0 results despite {doc_count} docs: '{query[:50]}...'")
+                logger.warning(f"Query returned 0 results despite {doc_count} docs stored")
+                logger.debug(f"Full response: {results}")
                 return []
             
-            chunks = [
-                {
+            doc_results = results["documents"][0]
+            meta_results = results["metadatas"][0]
+            dist_results = results["distances"][0]
+            
+            logger.info(f"Query got {len(doc_results)} results")
+            
+            chunks = []
+            for i, (doc, meta, dist) in enumerate(zip(doc_results, meta_results, dist_results)):
+                if not doc or not doc.strip():
+                    logger.warning(f"Result {i}: empty document")
+                    continue
+                chunk = {
                     "content": doc,
-                    "source": meta.get("source", ""),
+                    "source": meta.get("source", "unknown") if meta else "unknown",
                     "similarity": round(1 - dist, 3),
                 }
-                for doc, meta, dist in zip(
-                    results["documents"][0],
-                    results["metadatas"][0],
-                    results["distances"][0],
-                )
-            ]
-            logger.debug(f"Retrieved {len(chunks)} chunks with similarities: {[c['similarity'] for c in chunks]}")
-            return chunks  # return top-k; similarity shown but not filtered
+                chunks.append(chunk)
+                if i < 3:  # Log first 3
+                    logger.debug(f"  Result {i}: source={chunk['source']}, similarity={chunk['similarity']}, len={len(doc)}")
+            
+            logger.info(f"Retrieved {len(chunks)} valid chunks with similarities: {[c['similarity'] for c in chunks]}")
+            return chunks
         except Exception as e:
             logger.error(f"Retrieval error for query '{query[:50]}...': {e}", exc_info=True)
             return []
@@ -227,6 +240,32 @@ class RAGEngine:
             return sorted({m["source"] for m in results["metadatas"]})
         except Exception:
             return []
+
+    def get_debug_info(self) -> dict:
+        """Return diagnostic info about what's stored in the collection."""
+        try:
+            count = self.collection.count()
+            if count == 0:
+                return {"count": 0, "chunks": [], "status": "empty"}
+            
+            # Get first 3 chunks to inspect
+            results = self.collection.get(limit=3, include=["documents", "metadatas"])
+            chunks_info = []
+            for doc, meta in zip(results["documents"], results["metadatas"]):
+                chunks_info.append({
+                    "source": meta.get("source", "unknown"),
+                    "content_len": len(doc) if doc else 0,
+                    "content_preview": (doc[:100] if doc else "")
+                })
+            
+            return {
+                "count": count,
+                "chunks": chunks_info,
+                "sources": sorted({m["source"] for m in results["metadatas"]}),
+                "status": "ok"
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
     def clear(self):
         try:
