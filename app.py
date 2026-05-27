@@ -589,10 +589,6 @@ if not st.session_state.get("rag"):
     try:
         from rag_engine import RAGEngine
         st.session_state.rag = RAGEngine()
-        # Verify RAG is healthy
-        if not st.session_state.rag.is_healthy():
-            logger.warning("RAG health check failed, disabling RAG")
-            st.session_state.rag = None
     except Exception as exc:
         logger.exception("RAG initialization failed")
         st.error(f"❌ Failed to initialize RAG: {exc}")
