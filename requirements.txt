@@ -11,10 +11,14 @@ tokenizers>=0.15.0
 pypdf>=4.0.0
 requests>=2.31.0
 
+# Persistent vector store (Supabase / Postgres + pgvector)
+supabase>=2.4.0
+
 # Markdown rendering
 markdown-it-py>=3.0.0
 
-# Agentic AI
+# Agentic AI — web search (ddgs is the maintained successor to duckduckgo-search)
+ddgs>=9.0.0
 duckduckgo-search>=6.0.0
 
 # Prompt Management & Observability (v3+ uses OTel-based API — required by langfuse_tracer.py)

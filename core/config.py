@@ -14,6 +14,10 @@ class Config:
     # RAG
     chroma_db_path: str
     rag_top_k: int
+
+    # Supabase (optional — persistent pgvector RAG store)
+    supabase_url: str
+    supabase_key: str
     
     # Langfuse (optional)
     langfuse_secret_key: str
@@ -46,6 +50,10 @@ class Config:
         self.chroma_db_path = _clean("CHROMA_DB_PATH", "./chroma_db")
         self.rag_top_k = int(_clean("RAG_TOP_K", "3") or "3")
 
+        # Supabase configuration (optional — enables persistent pgvector RAG)
+        self.supabase_url = _clean("SUPABASE_URL")
+        self.supabase_key = _clean("SUPABASE_KEY")
+
         # Langfuse configuration (optional)
         self.langfuse_secret_key = _clean("LANGFUSE_SECRET_KEY")
         self.langfuse_public_key = _clean("LANGFUSE_PUBLIC_KEY")
@@ -60,6 +68,11 @@ class Config:
         k = self.openrouter_api_key
         return bool(k) and "REPLACE_ME" not in k and "YOUR_KEY" not in k
     
+    def is_supabase_enabled(self) -> bool:
+        """True when a Supabase pgvector backend is configured."""
+        return bool(self.supabase_url and self.supabase_key
+                    and "REPLACE_ME" not in self.supabase_url)
+
     def is_langfuse_enabled(self) -> bool:
         """Check if Langfuse tracing is configured."""
         return bool(self.langfuse_secret_key and self.langfuse_public_key)

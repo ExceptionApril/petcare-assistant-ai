@@ -4,12 +4,11 @@ Works locally and on Streamlit Cloud without external embedding services.
 """
 
 import os
-import io
-import re
-import hashlib
 import logging
 import chromadb
 from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+import rag_common
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +28,9 @@ def _get_chroma_path():
 
 CHROMA_PATH     = _get_chroma_path()
 COLLECTION_NAME = "petcare_docs"
-CHUNK_SIZE      = 500
-CHUNK_OVERLAP   = 50
-TOP_K           = 3
+CHUNK_SIZE      = rag_common.CHUNK_SIZE
+CHUNK_OVERLAP   = rag_common.CHUNK_OVERLAP
+TOP_K           = rag_common.TOP_K
 
 
 class RAGEngine:
@@ -105,51 +104,14 @@ class RAGEngine:
     def ingest_bytes(self, file_bytes: bytes, filename: str) -> int:
         """Ingest a PDF or TXT file. Returns the number of chunks added."""
         logger.info("Ingesting '%s'...", filename)
-        text = (
-            self._extract_pdf(file_bytes)
-            if filename.lower().endswith(".pdf")
-            else file_bytes.decode("utf-8", errors="ignore")
-        )
+        text = rag_common.extract_text(file_bytes, filename)
         if not text.strip():
             logger.warning("No text extracted from '%s'", filename)
             return 0
         return self._ingest_text(text, source=filename)
 
-    def _extract_pdf(self, file_bytes: bytes) -> str:
-        try:
-            import pypdf
-            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-            pages = []
-            for i, p in enumerate(reader.pages):
-                text = p.extract_text() or ""
-                text = text.replace("\r\n", "\n").replace("\r", "\n")
-                text = re.sub(r"[ \t]+", " ", text)   # collapse horizontal whitespace
-                text = re.sub(r"\n+", " ", text)       # all newlines → space (fix word-per-line PDFs)
-                text = re.sub(r" {2,}", " ", text)     # collapse double spaces
-                text = text.strip()
-                if text:
-                    pages.append(f"[Page {i+1}] {text}")
-            return "\n\n".join(pages)
-        except Exception as e:
-            logger.error("PDF extraction error: %s", e)
-            return file_bytes.decode("utf-8", errors="ignore")
-
-    def _chunk_text(self, text: str, source: str) -> list:
-        chunks = []
-        start, idx = 0, 0
-        while start < len(text):
-            chunk_text = text[start : start + CHUNK_SIZE].strip()
-            if chunk_text:
-                chunk_id = hashlib.md5(
-                    f"{source}_{idx}_{chunk_text[:50]}".encode()
-                ).hexdigest()
-                chunks.append({"id": chunk_id, "text": chunk_text, "source": source, "chunk_index": idx})
-                idx += 1
-            start += CHUNK_SIZE - CHUNK_OVERLAP
-        return chunks
-
     def _ingest_text(self, text: str, source: str) -> int:
-        chunks = self._chunk_text(text, source)
+        chunks = rag_common.chunk_text(text, source)
         if not chunks:
             return 0
         logger.info("Embedding %d chunks for '%s'...", len(chunks), source)
@@ -352,6 +314,18 @@ class RAGEngine:
             "total_count": max(chroma_info.get("count", 0), memory_info.get("count", 0))
         }
 
+    def delete_source(self, source: str) -> None:
+        """Remove every chunk belonging to a single uploaded file."""
+        try:
+            self.collection.delete(where={"source": source})
+        except Exception as e:
+            logger.warning("Chroma delete_source failed: %s", e)
+        # also drop from the in-memory backup
+        for cid in [cid for cid, c in self._memory_store.items() if c.get("source") == source]:
+            self._memory_store.pop(cid, None)
+        self._sources.discard(source)
+        logger.info("Deleted source '%s'.", source)
+
     def clear(self):
         try:
             self.chroma.delete_collection(COLLECTION_NAME)
@@ -365,3 +339,26 @@ class RAGEngine:
             logger.info("Vector store and memory cache cleared.")
         except Exception as e:
             logger.error("Clear error: %s", e)
+
+
+# ── Backend factory ─────────────────────────────────────────────────────────
+
+def get_rag_engine():
+    """
+    Return the active RAG backend.
+
+    Prefers Supabase pgvector (persistent across Streamlit Cloud restarts) when
+    SUPABASE_URL / SUPABASE_KEY are configured; otherwise falls back to the
+    local ChromaDB engine. Both expose the same method surface, so callers are
+    backend-agnostic.
+    """
+    try:
+        from supabase_store import is_supabase_configured, SupabaseVectorStore
+        if is_supabase_configured():
+            logger.info("RAG backend: Supabase (pgvector)")
+            return SupabaseVectorStore()
+    except Exception as e:
+        logger.warning("Supabase backend unavailable (%s) — falling back to local ChromaDB.", e)
+
+    logger.info("RAG backend: local ChromaDB")
+    return RAGEngine()

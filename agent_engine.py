@@ -1,10 +1,27 @@
 """Agentic AI using ReAct-style reasoning loop with web search."""
 import re
 import os
-from duckduckgo_search import DDGS
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _get_ddgs():
+    """Return a DDGS class from whichever DuckDuckGo client is installed.
+
+    `ddgs` is the maintained successor to `duckduckgo-search`; we prefer it but
+    fall back to the legacy package so the app keeps working either way.
+    """
+    try:
+        from ddgs import DDGS
+        return DDGS
+    except Exception:
+        try:
+            from duckduckgo_search import DDGS
+            return DDGS
+        except Exception as e:
+            logger.error("No DuckDuckGo search client available: %s", e)
+            return None
 
 FALLBACK_MODELS = [
     "openai/gpt-oss-120b:free",
@@ -98,23 +115,39 @@ class ReActAgent:
         return text.strip()[:300]
 
     @staticmethod
-    def web_search(query: str, max_results: int = 3) -> str:
-        """Search the web using DuckDuckGo (free, no API key). Tries multiple backends."""
+    def web_search(query: str, max_results: int = 4) -> str:
+        """Search the web using DuckDuckGo (free, no API key). Tries multiple backends.
+
+        Returns formatted result lines on success, or an EMPTY string when no
+        usable results were found — callers must treat "" as "no web context"
+        and fall back to general knowledge rather than feeding a failure notice
+        to the model.
+        """
+        DDGS = _get_ddgs()
+        if DDGS is None:
+            logger.error("No DuckDuckGo client installed.")
+            return ""
+
         backends = ["auto", "html", "lite"]
         for backend in backends:
             try:
                 with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=max_results, backend=backend))
+                    try:
+                        results = list(ddgs.text(query, max_results=max_results, backend=backend))
+                    except TypeError:
+                        # Older/newer signatures may not accept `backend` — retry without it.
+                        results = list(ddgs.text(query, max_results=max_results))
                 if results:
                     return "\n".join([
-                        f"- {r['title']}: {ReActAgent._sanitize_search_result(r.get('body', ''))}"
+                        f"- {r.get('title', '')}: "
+                        f"{ReActAgent._sanitize_search_result(r.get('body', r.get('description', '')))}"
                         for r in results
                     ])
-                return "No search results found."
+                logger.info("Web search backend '%s' returned no results.", backend)
             except Exception as e:
                 logger.warning(f"Web search backend '{backend}' failed: {e}. Trying next...")
-        logger.error("All DuckDuckGo backends failed.")
-        return "Web search is temporarily unavailable. Please try again later."
+        logger.error("All DuckDuckGo backends failed for query: %s", query)
+        return ""
     
     def should_search(self, user_message: str) -> bool:
         """Only trigger web search for explicit live-data or search requests."""
@@ -308,6 +341,8 @@ Instructions: Use the above documents to answer the user's question. If document
         rag_context: str = "",
         temperature: float = 0.7,
         max_tokens: int = 1200,
+        allow_web_search: bool = False,
+        force_web_search: bool = False,
     ):
         """
         Like generate_response but yields event tuples for streaming UI.
@@ -331,8 +366,17 @@ Instructions: Use the above documents to answer the user's question. If document
                 + "\n\nInstructions: Use the above documents first. "
                   "Fall back to general knowledge only if documents don't cover it."
             )
+
+        # Decide whether the web-search phase may run this turn.
+        #   force_web_search → user toggled 🌐 on, always do at least one search
+        #   allow_web_search → web is permitted (toggle on, or RAG found nothing);
+        #                      the LLM still decides per-question whether it helps
+        keyword_wants_search = self.should_search(user_message)
+        web_enabled = use_reasoning and (force_web_search or allow_web_search or keyword_wants_search)
+
+        if rag_context and rag_context.strip():
             yield ("decision", "Using indexed documents (RAG)")
-        elif self.should_search(user_message):
+        elif force_web_search or keyword_wants_search:
             yield ("decision", "Searching the web for fresh info")
         else:
             yield ("decision", "Answering from general pet-care knowledge")
@@ -346,7 +390,8 @@ Instructions: Use the above documents to answer the user's question. If document
         # Run reasoning loop to collect web-search context (non-streaming).
         # Web search and RAG are independent — run both if triggered.
         search_context = user_message
-        if use_reasoning and self.should_search(user_message):
+        did_search = False
+        if web_enabled:
             for iteration in range(2):
                 thought_messages = [
                     {"role": "system", "content": system_prompt},
@@ -365,10 +410,23 @@ Instructions: Use the above documents to answer the user's question. If document
                 )
                 decision = decision.strip()
 
+                query = None
                 if decision.startswith("SEARCH:"):
                     query = decision.replace("SEARCH:", "").strip()
+                elif force_web_search and not did_search and iteration == 0:
+                    # User explicitly asked for web search — search the raw question
+                    # even if the LLM thought it could answer directly.
+                    query = user_message
+
+                if not query:
+                    break
+
+                results = self.web_search(query)
+                did_search = True
+                if results:
+                    # Only surface the web step/source when the search actually
+                    # returned usable results (drives the UI "Sources" panel).
                     yield ("thinking", query)
-                    results = self.web_search(query)
                     agent_steps.append({
                         "iteration": iteration + 1,
                         "thought": "Searching web",
@@ -380,6 +438,14 @@ Instructions: Use the above documents to answer the user's question. If document
                         f"Search results for '{query}':\n{results}"
                     )
                 else:
+                    # Search failed/empty — record the attempt but DON'T poison the
+                    # model's context with a failure notice; let it answer normally.
+                    agent_steps.append({
+                        "iteration": iteration + 1,
+                        "thought": "Web search returned no usable results",
+                        "action": f"web_search({query})",
+                        "observation": "No results (search unavailable) — answering from general knowledge.",
+                    })
                     break
 
         # Deduplication guard

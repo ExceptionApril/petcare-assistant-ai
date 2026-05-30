@@ -266,11 +266,11 @@ def _handle_document_upload(uploaded_file) -> None:
         return
     
     if not st.session_state.get("rag"):
-        st.error("❌ RAG system is not available. Documents cannot be indexed at this time.")
+        st.error("RAG system is not available. Documents cannot be indexed at this time.")
         return
-    
+
     try:
-        with st.spinner("📚 Indexing document..."):
+        with st.spinner("Indexing document..."):
             file_bytes = uploaded_file.read()
             logger.info(f"Uploading: {uploaded_file.name} ({len(file_bytes)} bytes)")
             
@@ -291,9 +291,9 @@ def _handle_document_upload(uploaded_file) -> None:
             
             if chunks_added > 0:
                 logger.info(f"Document successfully indexed: {uploaded_file.name}")
-                st.toast(f"Document indexed: {uploaded_file.name} ({chunks_added} chunks)", icon="📚")
+                st.toast(f"Document indexed: {uploaded_file.name} ({chunks_added} chunks)", icon=":material/task_alt:")
             else:
-                st.warning(f"⚠️ No content extracted from {uploaded_file.name}")
+                st.warning(f"No content extracted from {uploaded_file.name}")
     except Exception as exc:
         logger.error(f"Document upload error: {exc}", exc_info=True)
         st.error(f"❌ Failed to index document: {exc}")
@@ -421,9 +421,10 @@ def _process_pending_prompt() -> None:
 
     with st.status("Petlio is thinking...", expanded=True) as status_box:
         if rag_context:
-            st.write(f"📚 **Step {step_num}** · Retrieved "
-                     f"{len(sources_used)} document chunk(s) from RAG store")
+            st.write(f":material/folder_open: **Step {step_num}** · Retrieved "
+                     f"{len(sources_used)} document chunk(s) from your library")
         try:
+            web_toggle = st.session_state.get("web_search_on", False)
             for event_type, payload in st.session_state.agent.generate_response_stream(
                 user_message=prompt_text,
                 conversation_history=clean_history,
@@ -431,13 +432,17 @@ def _process_pending_prompt() -> None:
                 rag_context=rag_context,
                 temperature=st.session_state.temperature,
                 max_tokens=st.session_state.max_tokens,
+                # 🌐 toggle forces a search; with no RAG hit, allow the agent to
+                # auto-search when it decides fresh info would help.
+                force_web_search=web_toggle,
+                allow_web_search=web_toggle or not rag_context,
             ):
                 if event_type == "decision":
                     step_num += 1
-                    st.write(f"💭 **Step {step_num}** · {payload}")
+                    st.write(f":material/bolt: **Step {step_num}** · {payload}")
                 elif event_type == "thinking":
                     step_num += 1
-                    st.write(f"🌐 **Step {step_num}** · Web search: *{payload}*")
+                    st.write(f":material/public: **Step {step_num}** · Web search: *{payload}*")
                     web_searches.append(payload)
                 elif event_type == "chunk":
                     full_response += payload
@@ -531,6 +536,8 @@ if "pending_chat_prompt" not in st.session_state:
     st.session_state.pending_chat_prompt = ""
 if "show_upload_picker" not in st.session_state:
     st.session_state.show_upload_picker = False
+if "web_search_on" not in st.session_state:
+    st.session_state.web_search_on = False
 if "session_id" not in st.session_state:
     st.session_state.session_id = uuid.uuid4().hex
 
@@ -594,10 +601,11 @@ if not st.session_state.get("agent"):
 
 if not st.session_state.get("rag"):
     try:
-        from rag_engine import RAGEngine
-        st.session_state.rag = RAGEngine()
+        from rag_engine import get_rag_engine
+        st.session_state.rag = get_rag_engine()
+        st.session_state.rag_backend = type(st.session_state.rag).__name__
         doc_count = st.session_state.rag.get_document_count() if st.session_state.rag else 0
-        logger.info(f"✅ RAG initialized with {doc_count} documents")
+        logger.info(f"✅ RAG initialized ({st.session_state.rag_backend}) with {doc_count} documents")
     except Exception as exc:
         logger.exception("RAG initialization failed")
         logger.error(f"CRITICAL: RAG init error: {exc}")
@@ -614,7 +622,20 @@ def _logo_img(w: int, h: int, r: str = "9px") -> str:
             f'<img src="{LOGO_DATA}" style="width:{w}px;height:{h}px;'
             f'object-fit:contain;flex-shrink:0;border-radius:{r};" alt="Petlio" />'
         )
-    return "🐾"
+    return '<span class="ms" style="font-size:%dpx;color:var(--primary);">pets</span>' % w
+
+
+def _ms(name: str, size: int = 18, color: str = "currentColor", fill: int = 0) -> str:
+    """Render a Material Symbols (Rounded) icon as an inline span.
+
+    Uses the exact same icon family as Streamlit's native ``:material/<name>:``
+    syntax, so icons in custom HTML and in Streamlit widgets stay consistent.
+    """
+    return (
+        f'<span class="ms" style="font-size:{size}px;color:{color};'
+        f"font-variation-settings:'FILL' {fill},'wght' 400,'GRAD' 0,'opsz' {size};\">"
+        f"{name}</span>"
+    )
 
 
 # =============================================================================
@@ -622,25 +643,54 @@ def _logo_img(w: int, h: int, r: str = "9px") -> str:
 # =============================================================================
 CSS = """<style>
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..0');
 
 /* --- Design tokens -------------------------------------------------------- */
 :root {
+    /* Brand (amber) */
     --primary: #f59e0b;
-    --primary-hover: #d97706;
-    --primary-grad: linear-gradient(135deg, #f59e0b, #eab308);
-    --app-bg: #fefcf6;
+    --primary-hover: #c2710c;
+    --primary-grad: linear-gradient(135deg, #fbbf24, #f59e0b);
+    --primary-soft: #fef3c7;
+    /* Secondary accent (web / info — sky) */
+    --accent: #0ea5e9;
+    --accent-soft: #e0f2fe;
+    --accent-text: #0369a1;
+    /* Surfaces */
+    --app-bg: #faf7f1;
     --surface: #ffffff;
-    --cream: #fef8f3;
-    --cream-border: #f5e6d8;
-    --border: #e7e5e4;
-    --text-primary: #2c2418;
-    --text-muted: #78716c;
-    --text-body: #5a4a38;
+    --surface-2: #f6f2ea;
+    --cream: #fdf6ee;
+    --cream-border: #f0e4d4;
+    --border: #ece7df;
+    --border-strong: #ddd5c8;
+    /* Text */
+    --text-primary: #1c1917;
+    --text-muted: #8b827a;
+    --text-body: #4a443c;
+    /* Sources */
     --source-bg: #fef3c7;
     --source-text: #92400e;
-    --shadow-sm: 0 1px 3px rgba(44,36,24,0.06);
-    --shadow-md: 0 4px 16px rgba(44,36,24,0.08);
+    /* Elevation */
+    --shadow-xs: 0 1px 2px rgba(28,25,23,0.05);
+    --shadow-sm: 0 2px 8px rgba(28,25,23,0.06);
+    --shadow-md: 0 10px 30px rgba(28,25,23,0.08);
+    --shadow-lg: 0 20px 48px rgba(28,25,23,0.12);
+    /* Radius scale */
+    --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 20px;
     --font: 'Outfit', 'Inter', system-ui, sans-serif;
+}
+
+/* Material Symbols icon glyph (matches Streamlit's native :material/x: family) */
+.ms {
+    font-family: 'Material Symbols Rounded';
+    font-weight: normal; font-style: normal; line-height: 1;
+    letter-spacing: normal; text-transform: none; white-space: nowrap;
+    direction: ltr; display: inline-flex; align-items: center; justify-content: center;
+    vertical-align: middle; flex-shrink: 0;
+    -webkit-font-smoothing: antialiased;
+    -webkit-font-feature-settings: 'liga'; font-feature-settings: 'liga';
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
 }
 
 /* --- Hide Streamlit chrome ------------------------------------------------ */
@@ -784,6 +834,19 @@ div[class*="st-key-ch_item_"] button {
     box-shadow: none !important;
 }
 
+/* Knowledge-base status pill */
+.kb-status {
+    display: flex; align-items: center; gap: 8px;
+    margin: 4px 8px 0; padding: 7px 12px;
+    background: var(--cream); border: 1px solid var(--cream-border);
+    border-radius: 10px;
+}
+.kb-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.kb-text { font-size: 11.5px; color: var(--text-body); }
+.kb-text b { color: var(--text-primary); font-weight: 700; }
+
 /* Sidebar section label */
 .sidebar-section-label {
     font-size: 11px; font-weight: 700; color: var(--text-muted);
@@ -915,6 +978,21 @@ div[class*="st-key-ch_item_"] button {
     background: #fffbeb !important;
 }
 
+/* --- Message feed — fill the viewport instead of a cramped fixed box ------ */
+.st-key-msg_feed {
+    height: calc(100vh - 285px) !important;
+    min-height: 320px !important;
+    overflow-y: auto !important;
+    padding-right: 6px !important;
+    scrollbar-width: thin !important;
+}
+.st-key-msg_feed > div { height: auto !important; }
+.st-key-msg_feed::-webkit-scrollbar { width: 8px; }
+.st-key-msg_feed::-webkit-scrollbar-thumb {
+    background: #e7e0d4; border-radius: 8px;
+}
+.st-key-msg_feed::-webkit-scrollbar-track { background: transparent; }
+
 /* --- Floating input card -------------------------------------------------- */
 .st-key-input_card {
     background: var(--surface) !important;
@@ -959,8 +1037,9 @@ div[class*="st-key-ch_item_"] button {
     background: #fffbeb !important;
 }
 
-/* Attach button (📎) next to the chat input */
-.st-key-attach_btn > div > button {
+/* Attach (📎) and web-search (🌐) round buttons next to the chat input */
+.st-key-attach_btn > div > button,
+.st-key-web_btn > div > button {
     width: 38px !important;
     height: 38px !important;
     border-radius: 50% !important;
@@ -974,6 +1053,12 @@ div[class*="st-key-ch_item_"] button {
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
+    transition: all 150ms ease !important;
+}
+.st-key-attach_btn > div > button:hover,
+.st-key-web_btn > div > button:hover {
+    border-color: var(--primary) !important;
+    color: var(--primary-hover) !important;
 }
 
 /* Chat input field inside card */
@@ -1044,6 +1129,154 @@ html, body { background-color: var(--app-bg) !important; }
     border-left: 3px solid var(--primary);
     margin: 6px 0; padding-left: 10px; color: var(--text-muted);
 }
+
+/* ========================================================================== */
+/*  MODERN POLISH  — refined tokens applied across the icon + component system */
+/* ========================================================================== */
+
+/* Material icons rendered by Streamlit widgets (buttons, status, expander) */
+[data-testid="stIconMaterial"] { vertical-align: middle; }
+
+/* --- Sidebar ------------------------------------------------------------- */
+.petlio-brand { padding: 20px 18px 16px; gap: 11px; }
+.petlio-brand-name { font-size: 19px; letter-spacing: -0.02em; }
+
+section[data-testid="stSidebar"] .stButton > button {
+    border-radius: 12px !important;
+    box-shadow: 0 4px 12px rgba(245,158,11,0.22) !important;
+    letter-spacing: 0.01em !important;
+}
+section[data-testid="stSidebar"] .stButton > button:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 16px rgba(245,158,11,0.30) !important;
+    opacity: 1 !important;
+}
+/* keep the invisible history-row overlay buttons flat */
+div[class*="st-key-ch_item_"] .stButton > button:hover {
+    transform: none !important; box-shadow: none !important;
+}
+
+/* Search field with inline icon */
+section[data-testid="stSidebar"] .stTextInput input {
+    background-color: var(--surface-2) !important;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238b827a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' viewBox='0 0 24 24'><circle cx='11' cy='11' r='8'/><line x1='21' y1='21' x2='16.65' y2='16.65'/></svg>");
+    background-repeat: no-repeat; background-position: 12px center;
+    padding-left: 38px !important; height: 42px !important;
+    border-radius: 12px !important;
+}
+section[data-testid="stSidebar"] .stTextInput input:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 3px rgba(245,158,11,0.12) !important;
+}
+
+.kb-status { border-radius: 12px; padding: 8px 12px; }
+.kb-dot { box-shadow: 0 0 0 3px rgba(0,0,0,0.04); }
+
+/* --- Top header bar ------------------------------------------------------ */
+.chat-top-bar { padding: 12px 2px 14px; gap: 13px; }
+.chat-top-logo {
+    background: var(--surface); box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+}
+.chat-top-title { font-size: 16px; letter-spacing: -0.02em; }
+.online-badge {
+    display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+    font-size: 11px; font-weight: 600; color: #16a34a;
+    background: #f0fdf4; border: 1px solid #dcfce7;
+    padding: 4px 10px; border-radius: 999px;
+}
+.online-badge .online-dot { margin-left: 0; }
+
+/* --- Message bubbles ----------------------------------------------------- */
+.msg-row { margin-bottom: 16px; }
+.bubble-user {
+    border-radius: 18px 18px 6px 18px; padding: 11px 15px;
+    box-shadow: 0 4px 14px rgba(245,158,11,0.25);
+}
+.bubble-assistant {
+    border-radius: 18px 18px 18px 6px;
+    border-color: var(--border); box-shadow: var(--shadow-sm);
+}
+.avatar-bot {
+    border-radius: 11px; background: var(--surface);
+    border: 1px solid var(--border); box-shadow: var(--shadow-xs);
+}
+.avatar-me { background: linear-gradient(135deg, #3f3a34, #1c1917); }
+.avatar-me .ms { font-size: 18px; color: #fff; }
+
+/* --- Welcome state ------------------------------------------------------- */
+.welcome-wrap { padding: 48px 24px 24px; }
+.welcome-title { font-size: 28px; letter-spacing: -0.03em; }
+
+/* Suggestion chips — icon + label cards */
+.st-key-sug_wrap [data-testid="stButton"] > button {
+    border-radius: 14px !important; padding: 11px 16px !important;
+    box-shadow: var(--shadow-xs) !important;
+}
+.st-key-sug_wrap [data-testid="stButton"] > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: var(--shadow-sm) !important;
+    border-color: var(--primary) !important;
+    background: #fffdf8 !important;
+}
+.st-key-sug_wrap [data-testid="stIconMaterial"] { color: var(--primary) !important; }
+
+/* --- Topic chips (input card) -------------------------------------------- */
+.st-key-input_card [data-testid="stHorizontalBlock"]:first-of-type [data-testid="stIconMaterial"] {
+    color: var(--primary) !important;
+}
+
+/* --- Sources panel ------------------------------------------------------- */
+.source-card {
+    background: var(--surface); border-color: var(--border);
+    border-radius: 12px; transition: all 150ms ease;
+}
+.source-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-xs); }
+.source-index {
+    width: 28px; height: 28px; border-radius: 8px;
+}
+.source-index .ms { font-size: 16px; }
+.source-index.source-web { background: var(--accent-soft); color: var(--accent-text); }
+.source-domain {
+    background: var(--surface-2); color: var(--text-muted);
+    padding: 1px 6px; border-radius: 5px; margin-left: 8px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+}
+
+/* --- Meta pill ----------------------------------------------------------- */
+.meta-pill { gap: 5px; padding: 3px 11px; }
+.meta-pill .ms { font-size: 13px; }
+
+/* --- Input card ---------------------------------------------------------- */
+.st-key-input_card { border-radius: 22px !important; box-shadow: var(--shadow-md) !important; }
+.st-key-attach_btn > div > button,
+.st-key-web_btn > div > button {
+    border-radius: 12px !important; font-size: 18px !important;
+    background: var(--surface-2) !important;
+}
+.st-key-attach_btn > div > button:hover,
+.st-key-web_btn > div > button:hover {
+    background: #fffbeb !important; border-color: var(--primary) !important;
+}
+.st-key-input_card [data-testid="stChatInputSubmitButton"] button:hover {
+    opacity: 0.9 !important; transform: translateY(-1px) !important;
+}
+
+/* --- Reasoning expander -------------------------------------------------- */
+[data-testid="stExpander"] {
+    border: 1px solid var(--border) !important; border-radius: 12px !important;
+    background: var(--surface) !important; box-shadow: var(--shadow-xs) !important;
+    overflow: hidden;
+}
+[data-testid="stExpander"] summary { font-size: 13px !important; font-weight: 600 !important; }
+[data-testid="stExpander"] summary:hover { color: var(--primary-hover) !important; }
+[data-testid="stExpander"] [data-testid="stIconMaterial"] { color: var(--primary) !important; }
+
+/* --- Status (thinking) box ----------------------------------------------- */
+[data-testid="stStatusWidget"], [data-testid="stStatus"] {
+    border-radius: 12px !important;
+}
+.stMarkdown [data-testid="stIconMaterial"] { color: var(--primary); }
 </style>"""
 
 st.markdown(CSS, unsafe_allow_html=True)
@@ -1064,11 +1297,30 @@ with st.sidebar:
 
 
     # New Chat
-    if st.button("＋  New Chat", key="btn_new_chat", use_container_width=True):
+    if st.button(":material/add:  New Chat", key="btn_new_chat", use_container_width=True):
         _start_new_chat()
         st.rerun()
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # Knowledge-base status — backend + indexed document count
+    try:
+        _rag = st.session_state.get("rag")
+        _doc_count = _rag.get_document_count() if _rag else 0
+        _sources = _rag.get_sources() if _rag else []
+        _backend = st.session_state.get("rag_backend", "")
+        _is_supa = _backend == "SupabaseVectorStore"
+        _store_label = "Supabase" if _is_supa else "Local"
+        _dot = "#22c55e" if _is_supa else "#f59e0b"
+        st.markdown(
+            f'<div class="kb-status">'
+            f'<span class="kb-dot" style="background:{_dot}"></span>'
+            f'<span class="kb-text"><b>{_doc_count}</b> chunks · {len(_sources)} doc(s) '
+            f'· {_store_label} store</span></div>',
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        pass
 
     st.divider()
 
@@ -1076,7 +1328,7 @@ with st.sidebar:
     st.text_input(
         "Search",
         key="search_query",
-        placeholder="🔍  Search chats...",
+        placeholder="Search chats...",
         label_visibility="collapsed",
     )
 
@@ -1145,21 +1397,21 @@ st.markdown(
             <div class="chat-top-title">Petlio AI Assistant</div>
             <div class="chat-top-sub">Your friendly pet care companion</div>
         </div>
-        <div class="online-dot"></div>
+        <div class="online-badge"><span class="online-dot"></span>Online</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# Scrollable message feed
-with st.container(height=560, border=False):
+# Scrollable message feed — height is overridden in CSS to fill the viewport
+with st.container(height=560, border=False, key="msg_feed"):
     if not st.session_state.messages:
         logo_big = (
             f'<img src="{LOGO_DATA}" style="width:72px;height:72px;object-fit:contain;'
             f'border-radius:18px;box-shadow:0 8px 24px rgba(245,158,11,0.2);'
             f'display:block;margin:0 auto;" alt="Petlio" />'
             if LOGO_DATA
-            else '<span style="font-size:64px;display:block;text-align:center;">🐾</span>'
+            else f'<div style="text-align:center;">{_ms("pets", 64, "var(--primary)")}</div>'
         )
         st.markdown(
             f"""
@@ -1172,23 +1424,23 @@ with st.container(height=560, border=False):
             unsafe_allow_html=True,
         )
         suggestion_prompts = [
-            "What vaccinations does my dog need?",
-            "Best food for a senior cat?",
-            "How to train a puppy?",
-            "Signs my pet is sick?",
+            (":material/vaccines:", "What vaccinations does my dog need?"),
+            (":material/restaurant:", "Best food for a senior cat?"),
+            (":material/school:", "How to train a puppy?"),
+            (":material/sick:", "Signs my pet is sick?"),
         ]
         with st.container(key="sug_wrap"):
             sug_cols = st.columns(len(suggestion_prompts), gap="small")
-            for i, sug in enumerate(suggestion_prompts):
+            for i, (icon, sug) in enumerate(suggestion_prompts):
                 with sug_cols[i]:
-                    if st.button(sug, key=f"sug_{i}", use_container_width=True):
+                    if st.button(f"{icon}  {sug}", key=f"sug_{i}", use_container_width=True):
                         _submit_chat_prompt(sug)
     else:
         bot_avatar_html = (
             f'<img src="{LOGO_DATA}" style="width:32px;height:32px;'
             f'object-fit:contain;border-radius:10px;" alt="Petlio" />'
             if LOGO_DATA
-            else '<span style="font-size:22px;">🐾</span>'
+            else _ms("pets", 22, "var(--primary)")
         )
         for message in st.session_state.messages:
             role = message["role"]
@@ -1198,7 +1450,7 @@ with st.container(height=560, border=False):
                 st.markdown(
                     f"""
                     <div class="msg-row user">
-                        <div class="avatar-me">ME</div>
+                        <div class="avatar-me">{_ms("person", 18, "#fff")}</div>
                         <div class="bubble-user">{content}</div>
                     </div>
                     """,
@@ -1225,7 +1477,7 @@ with st.container(height=560, border=False):
                         )
                         cards += (
                             f'<div class="source-card">'
-                            f'<span class="source-index">{idx + 1}</span>'
+                            f'<span class="source-index">{_ms("description", 16)}</span>'
                             f'<div class="source-body">'
                             f'<span class="source-title">{display_name}'
                             f'<span class="source-domain">{ext}</span></span>'
@@ -1236,7 +1488,7 @@ with st.container(height=560, border=False):
                         safe_q = _html_mod.escape(query)
                         cards += (
                             f'<div class="source-card">'
-                            f'<span class="source-index" style="font-size:13px;background:#dbeafe;color:#1e40af;">🌐</span>'
+                            f'<span class="source-index source-web">{_ms("public", 16)}</span>'
                             f'<div class="source-body">'
                             f'<span class="source-title">{safe_q}'
                             f'<span class="source-domain">WEB</span></span>'
@@ -1252,7 +1504,9 @@ with st.container(height=560, border=False):
                 # Meta pills (the reasoning trace lives in its own expander below)
                 meta_parts: list[str] = []
                 if message.get("rag_used") and not unique_sources and not raw_web_searches:
-                    meta_parts.append('<span class="meta-pill">🔍 RAG</span>')
+                    meta_parts.append(
+                        f'<span class="meta-pill">{_ms("database", 13)}Knowledge base</span>'
+                    )
                 meta_html = (
                     f'<div class="meta-row">{"".join(meta_parts)}</div>'
                     if meta_parts
@@ -1272,7 +1526,7 @@ with st.container(height=560, border=False):
                 # Reasoning trace — collapsible expander listing every agent step
                 steps = message.get("agent_steps") or []
                 if steps:
-                    with st.expander("🧠 Show reasoning trace", expanded=False):
+                    with st.expander(":material/psychology: Reasoning trace", expanded=False):
                         for step in steps:
                             iteration = step.get("iteration", "?")
                             thought = step.get("thought", "")
@@ -1294,11 +1548,11 @@ with st.container(height=560, border=False):
 # =============================================================================
 with st.container(key="input_card"):
     pill_chips = [
-        ("nutrition", "🥗 Nutrition"),
-        ("health", "🏥 Health"),
-        ("training", "🎓 Training"),
-        ("care", "🛁 Care Tips"),
-        ("warnings", "⚠️ Warnings"),
+        ("nutrition", ":material/restaurant: Nutrition"),
+        ("health", ":material/health_and_safety: Health"),
+        ("training", ":material/school: Training"),
+        ("care", ":material/spa: Care Tips"),
+        ("warnings", ":material/warning: Warnings"),
     ]
     key_map = {
         "nutrition": "Tell me about pet Nutrition",
@@ -1313,13 +1567,36 @@ with st.container(key="input_card"):
             if st.button(label, key=f"pill_{k}", use_container_width=True):
                 _submit_chat_prompt(key_map[k])
 
-    inp_cols = st.columns([0.06, 0.94], vertical_alignment="center")
+    # Highlight the 🌐 button while web search is active (extra specificity so it
+    # reliably overrides the base round-button style)
+    if st.session_state.web_search_on:
+        st.markdown(
+            "<style>.stApp .st-key-web_btn > div > button,"
+            ".stApp .st-key-web_btn button{"
+            "background:linear-gradient(135deg,#fbbf24,#f59e0b)!important;"
+            "border:1px solid #f59e0b !important;color:#fff!important;"
+            "box-shadow:0 4px 12px rgba(245,158,11,0.3)!important;}"
+            ".stApp .st-key-web_btn [data-testid='stIconMaterial']{color:#fff!important;}</style>",
+            unsafe_allow_html=True,
+        )
+
+    inp_cols = st.columns([0.06, 0.06, 0.88], vertical_alignment="center")
     with inp_cols[0]:
         with st.container(key="attach_btn"):
-            if st.button("📎", key="attach_docs", help="Upload a PDF or TXT for RAG", use_container_width=True):
+            if st.button(":material/attach_file:", key="attach_docs", help="Upload a PDF or TXT for RAG", use_container_width=True):
                 st.session_state.show_upload_picker = not st.session_state.show_upload_picker
                 st.rerun()
     with inp_cols[1]:
+        with st.container(key="web_btn"):
+            web_help = (
+                "Web search is ON — answers will include fresh web results"
+                if st.session_state.web_search_on
+                else "Turn on web search for up-to-date info"
+            )
+            if st.button(":material/public:", key="web_toggle", help=web_help, use_container_width=True):
+                st.session_state.web_search_on = not st.session_state.web_search_on
+                st.rerun()
+    with inp_cols[2]:
         user_input = st.chat_input("Ask me anything about pet care...", key="chat_input")
 
     if st.session_state.show_upload_picker:
@@ -1338,8 +1615,15 @@ with st.container(key="input_card"):
                 logger.exception("Upload failed")
                 st.error(f"❌ {exc}")
 
+    hint = "Press Enter to send · Shift + Enter for new line"
+    if st.session_state.web_search_on:
+        hint = (
+            f'{_ms("public", 13, "var(--primary-hover)")} '
+            f'<b style="color:var(--primary-hover);">Web search ON</b> '
+            f'· Press Enter to send · Shift + Enter for new line'
+        )
     st.markdown(
-        '<div class="input-hint">Press Enter to send · Shift + Enter for new line</div>',
+        f'<div class="input-hint">{hint}</div>',
         unsafe_allow_html=True,
     )
 
