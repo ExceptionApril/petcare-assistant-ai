@@ -416,10 +416,13 @@ def _process_pending_prompt() -> None:
             "observation": f"{len(sources_used)} sources: {', '.join(s.rsplit('/', 1)[-1] for s in sources_used) or 'none'}",
         })
 
-    # Live-streaming placeholder for the assistant bubble (renders chunks token-by-token)
+    # Live placeholders: animated pet "thinking" indicator above the streaming answer
+    thinking_ph = st.empty()
+    thinking_ph.markdown(_pet_thinking("Petlio is sniffing around…"), unsafe_allow_html=True)
     response_placeholder = st.empty()
+    first_chunk = True
 
-    with st.status("Petlio is thinking...", expanded=True) as status_box:
+    with st.status("Petlio is thinking…", expanded=False) as status_box:
         if rag_context:
             st.write(f":material/folder_open: **Step {step_num}** · Retrieved "
                      f"{len(sources_used)} document chunk(s) from your library")
@@ -440,18 +443,26 @@ def _process_pending_prompt() -> None:
                 if event_type == "decision":
                     step_num += 1
                     st.write(f":material/bolt: **Step {step_num}** · {payload}")
+                    thinking_ph.markdown(_pet_thinking(f"{payload}…"), unsafe_allow_html=True)
                 elif event_type == "thinking":
                     step_num += 1
                     st.write(f":material/public: **Step {step_num}** · Web search: *{payload}*")
                     web_searches.append(payload)
+                    thinking_ph.markdown(
+                        _pet_thinking(f"Searching the web · “{payload}”"),
+                        unsafe_allow_html=True,
+                    )
                 elif event_type == "chunk":
+                    if first_chunk:
+                        thinking_ph.empty()  # answer is arriving — drop the indicator
+                        first_chunk = False
                     full_response += payload
                     # Live render of the answer as tokens stream in
                     response_placeholder.markdown(
                         f'<div class="msg-row assistant">'
                         f'<div class="bubble-assistant">'
                         f'{_format_bubble_content(full_response)}'
-                        f'<span style="opacity:0.5;">▌</span>'
+                        f'<span class="stream-caret">▌</span>'
                         f'</div></div>',
                         unsafe_allow_html=True,
                     )
@@ -459,17 +470,22 @@ def _process_pending_prompt() -> None:
                     agent_steps = payload
         except Exception as exc:
             logger.exception("Streaming failed")
-            full_response = f"❌ Error: {exc}"
+            full_response = f"⚠️ Error: {exc}"
             blocked = True
 
         status_box.update(
-            label="Done!" if not blocked else "Error occurred",
+            label="Done" if not blocked else "Error occurred",
             state="complete" if not blocked else "error",
             expanded=False,
         )
 
-    # Combine RAG + agent steps so the saved reasoning trace shows the whole flow
+    thinking_ph.empty()
+
+    # Combine RAG + agent steps, then renumber sequentially so the reasoning trace
+    # reads Step 1, 2, 3… (previously RAG + web both showed as "Step 1").
     agent_steps = rag_steps + (agent_steps or [])
+    for _i, _stp in enumerate(agent_steps, 1):
+        _stp["iteration"] = _i
 
     # Clear the live placeholder — the message will re-render through the normal loop on rerun
     response_placeholder.empty()
@@ -638,6 +654,20 @@ def _ms(name: str, size: int = 18, color: str = "currentColor", fill: int = 0) -
     )
 
 
+def _pet_thinking(label: str = "Petlio is thinking…") -> str:
+    """Animated pet-paw typing indicator shown while the AI is working."""
+    import html as _h
+    paws = "".join(
+        f'<span class="paw" style="animation-delay:{d}s">'
+        f'<span class="ms" style="font-size:19px;">pets</span></span>'
+        for d in ("0", "0.18", "0.36")
+    )
+    return (
+        f'<div class="pet-think">{paws}'
+        f'<span class="pet-think-label">{_h.escape(label)}</span></div>'
+    )
+
+
 # =============================================================================
 # CSS — matches the screenshot design spec exactly
 # =============================================================================
@@ -705,7 +735,7 @@ html, body, .stApp {
 .block-container {
     padding-top: 0.75rem !important;
     padding-bottom: 0 !important;
-    max-width: 860px !important;
+    max-width: 1040px !important;
 }
 
 /* --- Sidebar ------------------------------------------------------------- */
@@ -1104,18 +1134,28 @@ div[class*="st-key-ch_item_"] button {
 [data-testid="stChatMessage"] { padding: 0 !important; }
 [data-testid="stMarkdownContainer"] > p { margin: 0 !important; }
 
-/* Prevent white flash during Streamlit reruns */
+/* Prevent white flash during Streamlit reruns / streaming */
 html, body { background-color: var(--app-bg) !important; }
 .stApp,
 [data-testid="stAppViewContainer"],
 [data-testid="stMain"],
-[data-testid="stMainBlockContainer"] {
+[data-testid="stMainBlockContainer"],
+[data-testid="stBottomBlockContainer"] {
     background-color: var(--app-bg) !important;
     opacity: 1 !important;
 }
-[data-testid="stSkeleton"] { display: none !important; }
-/* Prevent Streamlit dimming content during rerun */
-.stApp > * { opacity: 1 !important; }
+/* the message feed + its blocks stay transparent so the cream app-bg always
+   shows through — this is what kills the white flash while the answer streams in */
+.st-key-msg_feed,
+.st-key-msg_feed > div,
+.st-key-msg_feed [data-testid="stVerticalBlock"],
+.st-key-msg_feed [data-testid="stElementContainer"] {
+    background-color: transparent !important;
+}
+[data-testid="stSkeleton"], [data-testid="stStatusWidget"] { display: none !important; }
+/* never dim / fade content during a rerun */
+.stApp, .stApp > *, [data-testid="stAppViewContainer"] > * { opacity: 1 !important; }
+[data-testid="stAppViewContainer"] * { transition: none !important; }
 
 /* Markdown content inside assistant bubble */
 .bubble-assistant p { margin: 4px 0; font-size: 14px; line-height: 1.6; }
@@ -1197,15 +1237,21 @@ section[data-testid="stSidebar"] .stTextInput input:focus {
 .online-badge .online-dot { margin-left: 0; }
 
 /* --- Message bubbles ----------------------------------------------------- */
-.msg-row { margin-bottom: 16px; }
+.msg-row { margin-bottom: 18px; }
 .bubble-user {
     border-radius: 18px 18px 6px 18px; padding: 11px 15px;
     box-shadow: 0 4px 14px rgba(245,158,11,0.25);
+    max-width: 76% !important;
 }
 .bubble-assistant {
     border-radius: 18px 18px 18px 6px;
     border-color: var(--border); box-shadow: var(--shadow-sm);
+    max-width: 92% !important; padding: 16px 20px;
 }
+
+/* reasoning trace: clear gap from its message, aligned under the bubble */
+.st-key-msg_feed [data-testid="stExpander"] { margin: 6px 0 22px 44px !important; }
+.st-key-msg_feed [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p { margin: 2px 0 !important; }
 .avatar-bot {
     border-radius: 11px; background: var(--surface);
     border: 1px solid var(--border); box-shadow: var(--shadow-xs);
@@ -1287,6 +1333,26 @@ section[data-testid="stSidebar"] .stTextInput input:focus {
 }
 .stMarkdown [data-testid="stIconMaterial"] { color: var(--primary); }
 
+/* --- Pet "thinking" animation (shown while the AI is generating) --------- */
+@keyframes pawWalk {
+    0%, 100% { transform: translateY(0) scale(0.9); opacity: 0.3; }
+    40%      { transform: translateY(-5px) scale(1); opacity: 1; }
+}
+.pet-think {
+    display: flex; align-items: center; gap: 3px;
+    padding: 6px 4px 10px 4px; margin-left: 42px;
+}
+.pet-think .paw { display: inline-flex; animation: pawWalk 1.05s ease-in-out infinite; }
+.pet-think .paw .ms { color: var(--primary); }
+.pet-think-label {
+    margin-left: 10px; font-size: 13px; font-weight: 600; color: var(--text-muted);
+}
+@media (max-width: 768px) { .pet-think { margin-left: 0; } }
+
+/* blinking caret on the streaming answer */
+@keyframes caretBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.stream-caret { color: var(--primary); font-weight: 600; animation: caretBlink 1s steps(1) infinite; }
+
 /* ========================================================================== */
 /*  COMPOSER ROW  — robust attach / web / input layout (all screen sizes)     */
 /* ========================================================================== */
@@ -1348,6 +1414,7 @@ html, body, .stApp { max-width: 100%; overflow-x: hidden; }
     .bubble-assistant { max-width: 90% !important; padding: 12px 14px !important; }
     .msg-row { gap: 8px !important; margin-bottom: 13px !important; }
     .avatar-bot, .avatar-me { width: 28px !important; height: 28px !important; }
+    .st-key-msg_feed [data-testid="stExpander"] { margin-left: 0 !important; }
 
     /* header + welcome scale down */
     .chat-top-bar { padding: 10px 0 10px !important; }

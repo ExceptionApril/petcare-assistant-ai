@@ -159,7 +159,20 @@ class ReActAgent:
         ]
         message_lower = user_message.lower()
         return any(trigger in message_lower for trigger in search_triggers)
-    
+
+    @staticmethod
+    def _is_personal_memory(message: str) -> bool:
+        """True for questions that must be answered from the conversation history
+        (the user's own pet, or recalling something said earlier) — searching the
+        web for these is useless and tends to trigger refusals."""
+        low = message.lower()
+        triggers = [
+            "recall", "remember", "do you remember", "what did i", "what's my",
+            "whats my", "what is my", "name of my", "my pet's name", "my pets name",
+            "i told you", "told you", "i said", "earlier i", "my aspin",
+        ]
+        return any(t in low for t in triggers)
+
     def run_reasoning_loop(
         self,
         user_message: str,
@@ -359,24 +372,46 @@ Instructions: Use the above documents to answer the user's question. If document
 
         # Build system prompt with RAG context
         system_prompt = self.system_prompt
+
+        # Scope clarification — stop the model wrongly refusing valid questions.
+        system_prompt += (
+            "\n\nSCOPE: 'Pet care' is broad. Animal diseases and outbreaks (rabies, "
+            "parvo, distemper), local pet-health news, vaccinations, nutrition, training, "
+            "grooming, behaviour, and anything about the user's OWN pet are ALL in scope. "
+            "Answer them helpfully and specifically. Never reply that you 'can only help "
+            "with pet care' when the question is about an animal's health, safety, or the "
+            "user's pet. If the user asks you to recall something they told you earlier "
+            "(their pet's name, breed, age, etc.), use the conversation history above and "
+            "answer it — do not say you lack the information if it appears earlier in the chat."
+        )
+
         if rag_context and rag_context.strip():
             system_prompt += (
-                "\n\nRELEVANT DOCUMENTS (use this to answer accurately):\n"
+                "\n\nINDEXED DOCUMENTS (these may or may not be relevant to the question):\n"
                 + rag_context
-                + "\n\nInstructions: Use the above documents first. "
-                  "Fall back to general knowledge only if documents don't cover it."
+                + "\n\nIf the documents are relevant, ground your answer in them and cite the "
+                  "filename. If they are NOT relevant, ignore them and answer from the research "
+                  "context below or your own pet-care knowledge."
             )
 
+        # Personal/memory questions are answered from history, never the web.
+        is_personal = self._is_personal_memory(user_message)
+
         # Decide whether the web-search phase may run this turn.
-        #   force_web_search → user toggled 🌐 on, always do at least one search
-        #   allow_web_search → web is permitted (toggle on, or RAG found nothing);
-        #                      the LLM still decides per-question whether it helps
+        #   force_web_search → user toggled 🌐 on, do at least one search
+        #   allow_web_search → web permitted (toggle on, or RAG found nothing)
         keyword_wants_search = self.should_search(user_message)
-        web_enabled = use_reasoning and (force_web_search or allow_web_search or keyword_wants_search)
+        web_enabled = (
+            use_reasoning
+            and not is_personal
+            and (force_web_search or allow_web_search or keyword_wants_search)
+        )
 
         if rag_context and rag_context.strip():
             yield ("decision", "Using indexed documents (RAG)")
-        elif force_web_search or keyword_wants_search:
+        elif is_personal:
+            yield ("decision", "Recalling from our conversation")
+        elif web_enabled and (force_web_search or keyword_wants_search):
             yield ("decision", "Searching the web for fresh info")
         else:
             yield ("decision", "Answering from general pet-care knowledge")
@@ -418,6 +453,11 @@ Instructions: Use the above documents to answer the user's question. If document
                     # even if the LLM thought it could answer directly.
                     query = user_message
 
+                if not query:
+                    break
+                # strip replacement/control chars some free models emit (e.g. "…pet�")
+                query = query.replace("�", "").strip()
+                query = re.sub(r"[\x00-\x1f]", "", query).strip()
                 if not query:
                     break
 

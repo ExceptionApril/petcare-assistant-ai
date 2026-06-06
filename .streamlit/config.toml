@@ -11,8 +11,8 @@ port = 8501
 enableXsrfProtection = false
 
 [theme]
-primaryColor = "#F5C563"
-backgroundColor = "#FFF9E6"
-secondaryBackgroundColor = "#FEFDFB"
-textColor = "#111827"
+primaryColor = "#f59e0b"
+backgroundColor = "#faf7f1"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1c1917"
 font = "sans serif"
