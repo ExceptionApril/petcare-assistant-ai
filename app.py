@@ -708,21 +708,29 @@ html, body, .stApp {
     max-width: 860px !important;
 }
 
-/* --- Sidebar — always visible, never collapsible ------------------------- */
-button[data-testid="collapseSidebarButton"],
-button[data-testid="baseButton-headerNoPadding"],
-[data-testid="stSidebarCollapsedControl"] {
-    display: none !important;
-}
+/* --- Sidebar ------------------------------------------------------------- */
 section[data-testid="stSidebar"] {
     background: var(--surface) !important;
     border-right: 1px solid var(--border) !important;
-    transform: none !important;
-    display: block !important;
-    min-width: 15rem !important;
-    visibility: visible !important;
 }
 section[data-testid="stSidebar"] > div { padding-top: 0 !important; }
+
+/* Desktop: keep the sidebar permanently open & hide the collapse control.
+   On mobile we deliberately let Streamlit's collapsible drawer behaviour return
+   so it doesn't cover the whole screen (see the responsive block at the end). */
+@media (min-width: 769px) {
+    button[data-testid="collapseSidebarButton"],
+    button[data-testid="baseButton-headerNoPadding"],
+    [data-testid="stSidebarCollapsedControl"] {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] {
+        transform: none !important;
+        display: block !important;
+        min-width: 15rem !important;
+        visibility: visible !important;
+    }
+}
 
 /* Brand header */
 .petlio-brand {
@@ -981,6 +989,7 @@ div[class*="st-key-ch_item_"] button {
 /* --- Message feed — fill the viewport instead of a cramped fixed box ------ */
 .st-key-msg_feed {
     height: calc(100vh - 285px) !important;
+    height: calc(100dvh - 285px) !important;  /* iOS Safari: account for the dynamic toolbar */
     min-height: 320px !important;
     overflow-y: auto !important;
     padding-right: 6px !important;
@@ -1277,6 +1286,103 @@ section[data-testid="stSidebar"] .stTextInput input:focus {
     border-radius: 12px !important;
 }
 .stMarkdown [data-testid="stIconMaterial"] { color: var(--primary); }
+
+/* ========================================================================== */
+/*  COMPOSER ROW  — robust attach / web / input layout (all screen sizes)     */
+/* ========================================================================== */
+.st-key-input_card [data-testid="stHorizontalBlock"]:has(.st-key-attach_btn) {
+    flex-wrap: nowrap !important;
+    gap: 8px !important;
+    align-items: center !important;
+}
+/* the two icon buttons stay a fixed, finger-friendly size */
+.st-key-input_card [data-testid="stColumn"]:has(.st-key-attach_btn),
+.st-key-input_card [data-testid="stColumn"]:has(.st-key-web_btn) {
+    flex: 0 0 44px !important; min-width: 44px !important; width: 44px !important;
+}
+/* the chat-input column takes the remaining width */
+.st-key-input_card [data-testid="stHorizontalBlock"]:has(.st-key-attach_btn)
+    > [data-testid="stColumn"]:not(:has(.st-key-attach_btn)):not(:has(.st-key-web_btn)) {
+    flex: 1 1 auto !important; min-width: 0 !important;
+}
+.st-key-attach_btn > div > button,
+.st-key-web_btn > div > button {
+    width: 44px !important; height: 44px !important;
+}
+/* `:material/x:` button labels render as <span role="img"> markdown icons.
+   Tone the composer icons to the palette; brand-amber for chips/suggestions. */
+.st-key-attach_btn button span[role="img"],
+.st-key-web_btn button span[role="img"] { color: var(--text-muted) !important; }
+.st-key-attach_btn button:hover span[role="img"],
+.st-key-web_btn button:hover span[role="img"] { color: var(--primary-hover) !important; }
+.st-key-sug_wrap button span[role="img"],
+.st-key-input_card [data-testid="stHorizontalBlock"]:first-of-type button span[role="img"] {
+    color: var(--primary) !important;
+}
+
+/* ========================================================================== */
+/*  RESPONSIVE  — phones & small tablets (Safari / Chrome mobile)             */
+/* ========================================================================== */
+
+/* never allow the page itself to scroll sideways on a phone */
+html, body, .stApp { max-width: 100%; overflow-x: hidden; }
+.bubble-assistant { overflow-wrap: anywhere; }
+/* wide markdown tables scroll inside the bubble instead of breaking layout */
+.bubble-assistant table { display: block; width: 100%; overflow-x: auto; }
+
+@media (max-width: 768px) {
+    .block-container {
+        max-width: 100% !important;
+        padding-left: 0.7rem !important;
+        padding-right: 0.7rem !important;
+    }
+
+    /* feed fills the dynamic viewport minus a slightly taller composer */
+    .st-key-msg_feed {
+        height: calc(100dvh - 300px) !important;
+        min-height: 220px !important;
+    }
+
+    /* roomier message bubbles */
+    .bubble-user { max-width: 86% !important; }
+    .bubble-assistant { max-width: 90% !important; padding: 12px 14px !important; }
+    .msg-row { gap: 8px !important; margin-bottom: 13px !important; }
+    .avatar-bot, .avatar-me { width: 28px !important; height: 28px !important; }
+
+    /* header + welcome scale down */
+    .chat-top-bar { padding: 10px 0 10px !important; }
+    .chat-top-title { font-size: 15px !important; }
+    .chat-top-sub { font-size: 11px !important; }
+    .welcome-wrap { padding: 28px 14px 16px !important; }
+    .welcome-title { font-size: 22px !important; }
+    .welcome-sub { font-size: 13px !important; }
+
+    /* suggestion chips reflow to a 2×2 grid instead of 4 cramped columns */
+    .st-key-sug_wrap [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
+    .st-key-sug_wrap [data-testid="stColumn"] {
+        flex: 1 1 46% !important; min-width: 46% !important;
+    }
+
+    /* composer card */
+    .st-key-input_card { border-radius: 18px !important; padding: 10px 12px 8px !important; }
+    .input-hint { font-size: 10px !important; }
+
+    /* the on-screen submit + icon buttons get full 44px touch targets */
+    .st-key-input_card [data-testid="stChatInputSubmitButton"] button {
+        width: 40px !important; height: 40px !important;
+    }
+
+    /* drawer sidebar should sit above content, not shove it */
+    section[data-testid="stSidebar"] { box-shadow: var(--shadow-lg) !important; }
+}
+
+/* very small phones (e.g. iPhone SE) */
+@media (max-width: 380px) {
+    .welcome-title { font-size: 20px !important; }
+    .bubble-user, .bubble-assistant { font-size: 13.5px !important; }
+    .st-key-input_card [data-testid="stHorizontalBlock"]:first-of-type
+        [data-testid="stButton"] > button { font-size: 11px !important; padding: 4px 11px !important; }
+}
 </style>"""
 
 st.markdown(CSS, unsafe_allow_html=True)
@@ -1576,7 +1682,7 @@ with st.container(key="input_card"):
             "background:linear-gradient(135deg,#fbbf24,#f59e0b)!important;"
             "border:1px solid #f59e0b !important;color:#fff!important;"
             "box-shadow:0 4px 12px rgba(245,158,11,0.3)!important;}"
-            ".stApp .st-key-web_btn [data-testid='stIconMaterial']{color:#fff!important;}</style>",
+            ".stApp .st-key-web_btn button span[role='img']{color:#fff!important;}</style>",
             unsafe_allow_html=True,
         )
 
