@@ -52,6 +52,11 @@ Thumbs.db
 .chroma_db_test/
 chroma_db/
 
+# Local vector-store databases — never commit these
+test_chroma/
+test_chroma2/
+*.sqlite3
+
 # Local development artifacts — do NOT ship to Streamlit Cloud
 .venv/
 .venv_old_broken/

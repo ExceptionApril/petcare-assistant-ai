@@ -25,23 +25,28 @@ def test_agent_should_search():
     assert agent.should_search("my dog is happy") is False
 
 def test_web_search():
-    with patch('agent_engine.DDGS') as MockDDGS:
+    # web_search resolves its client lazily via _get_ddgs(); patch that factory.
+    with patch('agent_engine._get_ddgs') as mock_get_ddgs:
+        MockDDGS = mock_get_ddgs.return_value
         mock_instance = MockDDGS.return_value.__enter__.return_value
         mock_instance.text.return_value = [
             {"title": "Puppy Care Guide", "body": "Puppies need vaccination."}
         ]
-        
+
         result = ReActAgent.web_search("puppy care")
         assert "Puppy Care Guide" in result
         assert "Puppies need vaccination." in result
 
 def test_web_search_failed():
-    with patch('agent_engine.DDGS') as MockDDGS:
+    # On total failure web_search returns "" so callers fall back to general
+    # knowledge rather than feeding a failure notice to the model.
+    with patch('agent_engine._get_ddgs') as mock_get_ddgs:
+        MockDDGS = mock_get_ddgs.return_value
         mock_instance = MockDDGS.return_value.__enter__.return_value
         mock_instance.text.side_effect = Exception("Network error")
-        
+
         result = ReActAgent.web_search("puppy care")
-        assert "Search failed" in result
+        assert result == ""
 
 def test_generate_response_direct(mock_llm_client):
     agent = ReActAgent(mock_llm_client, "openai/gpt-4o-mini")
