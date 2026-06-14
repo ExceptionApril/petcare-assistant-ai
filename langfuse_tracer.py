@@ -1,5 +1,6 @@
 """Langfuse integration for observability and tracing (v3/v4 OTel API)."""
 import logging
+from contextlib import contextmanager
 from core.config import Config
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,66 @@ class LangfuseTracer:
 
     def is_enabled(self) -> bool:
         return self.enabled
+
+    @contextmanager
+    def trace_turn(self, user_input: str, session_id: str | None = None):
+        """Open a root span for one chat turn.
+
+        Everything traced inside this context (RAG retrieval, agent steps, the
+        LLM generation) nests under a single Langfuse trace instead of showing
+        up as disconnected top-level observations. Session id groups turns of
+        one chat together in the Langfuse Sessions view (v4 API, v3 fallback).
+        """
+        if not self.enabled or not self.langfuse:
+            yield None
+            return
+        from contextlib import ExitStack
+        stack = ExitStack()
+        try:
+            # v4: session/user/trace-name propagate via OTel baggage
+            try:
+                from langfuse import propagate_attributes
+                stack.enter_context(propagate_attributes(
+                    session_id=session_id, trace_name="petlio-chat-turn"))
+            except Exception:
+                pass
+            opener = getattr(self.langfuse, "start_as_current_observation", None)
+            if opener is not None:
+                span = stack.enter_context(opener(
+                    name="petlio-turn", as_type="span",
+                    input={"question": user_input}))
+            else:  # older v3 SDKs
+                span = stack.enter_context(self.langfuse.start_as_current_span(
+                    name="petlio-turn", input={"question": user_input}))
+            self._set_trace_io(span, input=user_input, session_id=session_id)
+        except Exception as e:
+            logger.warning("Langfuse turn start error: %s", e)
+            with stack:  # unwind anything partially opened
+                yield None
+            return
+        with stack:  # body exceptions propagate normally; span still closes
+            yield span
+
+    def _set_trace_io(self, span, session_id=None, **io) -> None:
+        """Set trace-level input/output across SDK versions (best-effort)."""
+        try:
+            if hasattr(span, "set_trace_io"):  # v4
+                span.set_trace_io(**io)
+            elif hasattr(self.langfuse, "update_current_trace"):  # v3
+                self.langfuse.update_current_trace(
+                    name="petlio-chat-turn", session_id=session_id, **io)
+        except Exception as e:
+            logger.debug("Langfuse trace io error: %s", e)
+
+    def end_turn(self, span, output: str) -> None:
+        """Attach the final answer to the turn span and its trace."""
+        if not span:
+            return
+        try:
+            span.update(output=output)
+            self._set_trace_io(span, output=output)
+        except Exception as e:
+            logger.warning("Langfuse turn end error: %s", e)
 
     def trace_llm_call(self, model: str, messages: list, response_text: str, tokens_used: int = 0):
         """Trace an LLM call as a Langfuse generation."""

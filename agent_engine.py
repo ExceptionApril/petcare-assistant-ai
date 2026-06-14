@@ -346,6 +346,47 @@ Instructions: Use the above documents to answer the user's question. If document
 
         return answer, agent_steps
 
+    def _grade_chunks(self, user_message: str, chunks: list) -> str:
+        """Agentic RAG grader: judge retrieved snippets and pick a route.
+
+        Returns "GOOD", "SKIP", or "RETRY: <rewritten query>". Best-effort —
+        on any model failure we keep the chunks (GOOD) so RAG never breaks.
+        """
+        previews = "\n".join(
+            f"- [{c.get('source', '?')}] {(c.get('content') or '')[:220]}"
+            for c in chunks[:4]
+        )
+        messages = [
+            {"role": "system", "content": (
+                "You are a retrieval grader for a pet-care assistant. "
+                "Judge whether document snippets are useful for answering the question."
+            )},
+            {"role": "user", "content": (
+                f"Question: {user_message}\n\n"
+                f"Snippets retrieved from the user's uploaded documents:\n{previews}\n\n"
+                "Reply with EXACTLY one line:\n"
+                "- GOOD — the snippets contain information useful for this question\n"
+                "- RETRY: <better search query> — the documents probably contain the "
+                "answer but these snippets miss it\n"
+                "- SKIP — the uploaded documents are irrelevant to this question"
+            )},
+        ]
+        try:
+            verdict, _ = self.call_llm_with_fallback(messages, max_tokens=40, temperature=0.0)
+            return (verdict or "GOOD").strip()
+        except Exception as exc:
+            logger.warning("RAG grading failed (%s) — keeping chunks.", exc)
+            return "GOOD"
+
+    @staticmethod
+    def _chunks_to_context(chunks: list) -> str:
+        parts = [
+            f"[Document {i} — Source: {c.get('source', 'unknown')} "
+            f"(relevance: {c.get('similarity', '?')})]:\n{c.get('content', '')}"
+            for i, c in enumerate(chunks, 1)
+        ]
+        return "\n\n---\n\n".join(parts)
+
     def generate_response_stream(
         self,
         user_message: str,
@@ -356,12 +397,19 @@ Instructions: Use the above documents to answer the user's question. If document
         max_tokens: int = 1200,
         allow_web_search: bool = False,
         force_web_search: bool = False,
+        rag_engine=None,
     ):
         """
         Like generate_response but yields event tuples for streaming UI.
 
+        When ``rag_engine`` is provided, the agent owns the full agentic RAG
+        loop: retrieve → grade relevance → rewrite the query and re-retrieve
+        if the snippets are weak → fall back to web search if the knowledge
+        base has nothing useful.
+
         Yields:
             ("decision", label_str)   — agent decided how to answer (RAG / web / direct)
+            ("rag", payload_dict)     — RAG outcome: {"used", "sources", "chunks"}
             ("thinking", query_str)   — agent is doing a web search
             ("chunk", text_str)       — final answer text chunk from LLM
             ("done", agent_steps)     — streaming finished; carries agent steps list
@@ -370,10 +418,15 @@ Instructions: Use the above documents to answer the user's question. If document
 
         agent_steps = []
 
-        # Build system prompt with RAG context
-        system_prompt = self.system_prompt
+        # Injection check — fail fast before any retrieval or model calls
+        if any(p in user_message.lower() for p in _INJECTION_PATTERNS):
+            yield ("decision", "Safety check")
+            yield ("chunk", "I'm sorry, I can't process that request.")
+            yield ("done", [])
+            return
 
-        # Scope clarification — stop the model wrongly refusing valid questions.
+        # Build system prompt; scope clarification stops wrongful refusals.
+        system_prompt = self.system_prompt
         system_prompt += (
             "\n\nSCOPE: 'Pet care' is broad. Animal diseases and outbreaks (rabies, "
             "parvo, distemper), local pet-health news, vaccinations, nutrition, training, "
@@ -384,6 +437,76 @@ Instructions: Use the above documents to answer the user's question. If document
             "(their pet's name, breed, age, etc.), use the conversation history above and "
             "answer it — do not say you lack the information if it appears earlier in the chat."
         )
+
+        # ── Agentic RAG: retrieve → grade → (rewrite & re-retrieve) → route ──
+        if rag_engine is not None and not (rag_context and rag_context.strip()):
+            try:
+                doc_count = rag_engine.get_document_count()
+            except Exception as exc:
+                logger.warning("RAG doc count failed: %s", exc)
+                doc_count = 0
+            if doc_count > 0:
+                yield ("decision", "Searching your knowledge base")
+                try:
+                    chunks = rag_engine.retrieve(user_message, k=5) or []
+                except Exception as exc:
+                    logger.error("RAG retrieval failed: %s", exc)
+                    chunks = []
+                agent_steps.append({
+                    "iteration": len(agent_steps) + 1,
+                    "thought": "Retrieve relevant chunks from indexed documents",
+                    "action": f"rag_retrieve({user_message[:60]!r}, k=5)",
+                    "observation": f"{len(chunks)} chunk(s) retrieved",
+                })
+                if chunks:
+                    yield ("decision", "Checking the snippets actually help")
+                    verdict = self._grade_chunks(user_message, chunks)
+                    v_upper = verdict.upper()
+                    if v_upper.startswith("RETRY"):
+                        retry_query = (
+                            verdict.split(":", 1)[1].strip() if ":" in verdict else user_message
+                        ) or user_message
+                        yield ("decision", "Refining the knowledge-base search")
+                        try:
+                            extra = rag_engine.retrieve(retry_query, k=5) or []
+                        except Exception as exc:
+                            logger.warning("RAG re-retrieve failed: %s", exc)
+                            extra = []
+                        seen = {c.get("content") for c in chunks}
+                        chunks += [c for c in extra if c.get("content") not in seen]
+                        agent_steps.append({
+                            "iteration": len(agent_steps) + 1,
+                            "thought": "Snippets weak — rewrote the retrieval query",
+                            "action": f"rag_retrieve({retry_query[:60]!r}, k=5)",
+                            "observation": f"{len(chunks)} chunk(s) after refinement",
+                        })
+                    elif v_upper.startswith("SKIP"):
+                        agent_steps.append({
+                            "iteration": len(agent_steps) + 1,
+                            "thought": "Documents judged irrelevant to this question",
+                            "action": "rag_grade",
+                            "observation": "SKIP — answering without document context",
+                        })
+                        chunks = []
+                    else:
+                        agent_steps.append({
+                            "iteration": len(agent_steps) + 1,
+                            "thought": "Snippets judged relevant to the question",
+                            "action": "rag_grade",
+                            "observation": "GOOD — grounding the answer in your documents",
+                        })
+                if chunks:
+                    chunks = chunks[:6]
+                    rag_context = self._chunks_to_context(chunks)
+                    rag_sources = [
+                        c.get("source", "") for c in chunks
+                        if c.get("source", "") not in ("", "unknown")
+                    ]
+                    yield ("rag", {"used": True, "sources": rag_sources, "chunks": chunks})
+                else:
+                    # Knowledge base had nothing useful — permit a web fallback
+                    allow_web_search = True
+                    yield ("rag", {"used": False, "sources": [], "chunks": []})
 
         if rag_context and rag_context.strip():
             system_prompt += (
@@ -404,7 +527,11 @@ Instructions: Use the above documents to answer the user's question. If document
         web_enabled = (
             use_reasoning
             and not is_personal
-            and (force_web_search or allow_web_search or keyword_wants_search)
+            and (
+                force_web_search
+                or keyword_wants_search
+                or (allow_web_search and not (rag_context and rag_context.strip()))
+            )
         )
 
         if rag_context and rag_context.strip():
@@ -415,12 +542,6 @@ Instructions: Use the above documents to answer the user's question. If document
             yield ("decision", "Searching the web for fresh info")
         else:
             yield ("decision", "Answering from general pet-care knowledge")
-
-        # Injection check
-        if any(p in user_message.lower() for p in _INJECTION_PATTERNS):
-            yield ("chunk", "I'm sorry, I can't process that request.")
-            yield ("done", [])
-            return
 
         # Run reasoning loop to collect web-search context (non-streaming).
         # Web search and RAG are independent — run both if triggered.

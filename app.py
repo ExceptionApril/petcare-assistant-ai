@@ -7,6 +7,7 @@ import logging
 import os
 import uuid
 import base64
+from contextlib import nullcontext
 from pathlib import Path
 
 import streamlit as st
@@ -24,7 +25,8 @@ try:
 except Exception:
     pass  # No secrets configured — rely on .env / existing env vars
 
-_sidebar_init = "expanded"
+# "auto" → expanded on desktop, collapsed drawer on phones (desktop CSS pins it open)
+_sidebar_init = "auto"
 
 # Set up page configurations
 st.set_page_config(
@@ -331,7 +333,12 @@ def _submit_chat_prompt(prompt_text: str) -> None:
 
 
 def _process_pending_prompt() -> None:
-    """Stage 2: run inside message_feed to stream the agent response."""
+    """Stage 2: run inside message_feed to stream the agentic-RAG response.
+
+    The agent owns the retrieval loop (retrieve → grade → refine → web
+    fallback); this function just renders its events and records traces under
+    a single Langfuse turn span.
+    """
     prompt_text = st.session_state.pending_chat_prompt
     st.session_state.pending_chat_prompt = ""  # clear before any yields
 
@@ -344,53 +351,15 @@ def _process_pending_prompt() -> None:
         st.rerun()
         return
 
-    rag_context = ""
-    sources_used: list[str] = []
-    retrieved_chunks: list[dict] = []
-    doc_count = 0
-    
+    tracer = st.session_state.get("langfuse_tracer")
     logger.info(f"Processing query: '{prompt_text[:100]}'")
-    
+
+    doc_count = 0
     try:
         if st.session_state.rag:
             doc_count = st.session_state.rag.get_document_count()
-            logger.info(f"🔍 RAG available with {doc_count} documents")
-            
-            if doc_count > 0:
-                logger.info(f"📚 Retrieving chunks for: '{prompt_text[:100]}'")
-                retrieved_chunks = st.session_state.rag.retrieve(prompt_text, k=5)
-                logger.info(f"✅ Retrieved {len(retrieved_chunks)} chunks from RAG")
-                
-                if not retrieved_chunks:
-                    logger.warning(f"⚠️ ALERT: RAG returned 0 chunks despite {doc_count} documents!")
-                    # Log diagnostic info (safely, in case session has old RAGEngine)
-                    try:
-                        if hasattr(st.session_state.rag, 'get_debug_info'):
-                            debug_info = st.session_state.rag.get_debug_info()
-                            logger.warning(f"   Debug info: {debug_info}")
-                    except Exception as e:
-                        logger.debug(f"Could not get debug info: {e}")
-                
-                sources_used = [
-                    c.get("source", "")
-                    for c in retrieved_chunks
-                    if c.get("source", "") not in ("", "unknown")
-                ]
-                if retrieved_chunks:
-                    parts = [
-                        f"[Document {i} — Source: {c['source']} (relevance: {c['similarity']})]:\n{c['content']}"
-                        for i, c in enumerate(retrieved_chunks, 1)
-                    ]
-                    rag_context = "\n\n---\n\n".join(parts)
-                    logger.info(f"✅ RAG context prepared: {len(rag_context)} chars from {len(parts)} chunks")
-            _trace_rag(st.session_state.get("langfuse_tracer"), prompt_text, retrieved_chunks)
     except Exception as exc:
-        logger.error(f"❌ RAG error: {exc}", exc_info=True)
-        # If RAG fails, continue without RAG context
-        if st.session_state.rag and ("readonly" in str(exc).lower() or "permission" in str(exc).lower()):
-            logger.warning("RAG marked unhealthy due to permission issues")
-            st.session_state.rag = None
-        # Continue without RAG context rather than failing the entire response
+        logger.warning(f"RAG doc count failed: {exc}")
 
     # Conversation history (exclude the user message just added).
     # 12 messages ≈ 6 turns — enough to recall "my cat is named Mochi" said
@@ -401,126 +370,140 @@ def _process_pending_prompt() -> None:
     # Stream the response using st.status for reasoning steps
     full_response = ""
     agent_steps: list[dict] = []
+    sources_used: list[str] = []
+    retrieved_chunks: list[dict] = []
     web_searches: list[str] = []
+    rag_used = False
     blocked = False
     step_num = 0
 
-    # Pre-seed the reasoning trace with the RAG retrieval (it happens before the agent loop)
-    rag_steps: list[dict] = []
-    if rag_context:
-        step_num += 1
-        rag_steps.append({
-            "iteration": step_num,
-            "thought": "Retrieve relevant chunks from indexed documents",
-            "action": "rag_retrieve(k=3)",
-            "observation": f"{len(sources_used)} sources: {', '.join(s.rsplit('/', 1)[-1] for s in sources_used) or 'none'}",
-        })
-
-    # Live placeholders: animated pet "thinking" indicator above the streaming answer
+    # Live placeholders: animated petcat "thinking" indicator above the streaming answer
     thinking_ph = st.empty()
     thinking_ph.markdown(_pet_thinking("Petlio is sniffing around…"), unsafe_allow_html=True)
     response_placeholder = st.empty()
     first_chunk = True
 
-    with st.status("Petlio is thinking…", expanded=False) as status_box:
-        if rag_context:
-            st.write(f":material/folder_open: **Step {step_num}** · Retrieved "
-                     f"{len(sources_used)} document chunk(s) from your library")
-        try:
-            web_toggle = st.session_state.get("web_search_on", False)
-            for event_type, payload in st.session_state.agent.generate_response_stream(
-                user_message=prompt_text,
-                conversation_history=clean_history,
-                use_reasoning=True,
-                rag_context=rag_context,
-                temperature=st.session_state.temperature,
-                max_tokens=st.session_state.max_tokens,
-                # 🌐 toggle forces a search; with no RAG hit, allow the agent to
-                # auto-search when it decides fresh info would help.
-                force_web_search=web_toggle,
-                allow_web_search=web_toggle or not rag_context,
-            ):
-                if event_type == "decision":
-                    step_num += 1
-                    st.write(f":material/bolt: **Step {step_num}** · {payload}")
-                    thinking_ph.markdown(_pet_thinking(f"{payload}…"), unsafe_allow_html=True)
-                elif event_type == "thinking":
-                    step_num += 1
-                    st.write(f":material/public: **Step {step_num}** · Web search: *{payload}*")
-                    web_searches.append(payload)
-                    thinking_ph.markdown(
-                        _pet_thinking(f"Searching the web · “{payload}”"),
-                        unsafe_allow_html=True,
-                    )
-                elif event_type == "chunk":
-                    if first_chunk:
-                        thinking_ph.empty()  # answer is arriving — drop the indicator
-                        first_chunk = False
-                    full_response += payload
-                    # Live render of the answer as tokens stream in
-                    response_placeholder.markdown(
-                        f'<div class="msg-row assistant">'
-                        f'<div class="bubble-assistant">'
-                        f'{_format_bubble_content(full_response)}'
-                        f'<span class="stream-caret">▌</span>'
-                        f'</div></div>',
-                        unsafe_allow_html=True,
-                    )
-                elif event_type == "done":
-                    agent_steps = payload
-        except Exception as exc:
-            logger.exception("Streaming failed")
-            full_response = f"⚠️ Error: {exc}"
-            blocked = True
-
-        status_box.update(
-            label="Done" if not blocked else "Error occurred",
-            state="complete" if not blocked else "error",
-            expanded=False,
-        )
-
-    thinking_ph.empty()
-
-    # Combine RAG + agent steps, then renumber sequentially so the reasoning trace
-    # reads Step 1, 2, 3… (previously RAG + web both showed as "Step 1").
-    agent_steps = rag_steps + (agent_steps or [])
-    for _i, _stp in enumerate(agent_steps, 1):
-        _stp["iteration"] = _i
-
-    # Clear the live placeholder — the message will re-render through the normal loop on rerun
-    response_placeholder.empty()
-
-    # If the response was blocked by safety checks, use diagnostic fallback
-    if not full_response.strip() or blocked:
-        # Provide helpful context about what went wrong
-        if doc_count == 0 and st.session_state.rag:
-            fallback_msg = (
-                "📌 **Note:** You haven't uploaded any documents yet. "
-                "Try uploading a PDF or text file about your pet for more personalized answers. "
-                "Or ask me a general pet care question!"
-            )
-        elif len(retrieved_chunks) == 0 and doc_count > 0:
-            fallback_msg = (
-                "🔍 **No matching documents found.** Your documents don't seem to cover this topic. "
-                "Try rephrasing your question, or ask about general pet care."
-            )
-        else:
-            fallback_msg = (
-                "I'm sorry, I can only help with pet care-related questions. "
-                "Please ask something about your pet's health, nutrition, training, or care."
-            )
-        full_response = fallback_msg
-
-    _trace_llm(
-        st.session_state.get("langfuse_tracer"),
-        user_input=prompt_text,
-        response_text=full_response,
-        tokens_used=len(prompt_text.split()) + len(full_response.split()),
+    turn_ctx = (
+        tracer.trace_turn(prompt_text, st.session_state.session_id)
+        if tracer else nullcontext()
     )
-    _trace_agent_steps(st.session_state.get("langfuse_tracer"), agent_steps)
+    with turn_ctx as turn_span:
+        with st.status("Petlio is thinking…", expanded=False) as status_box:
+            try:
+                web_toggle = st.session_state.get("web_search_on", False)
+                for event_type, payload in st.session_state.agent.generate_response_stream(
+                    user_message=prompt_text,
+                    conversation_history=clean_history,
+                    use_reasoning=True,
+                    rag_engine=st.session_state.rag,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                    # 🌐 toggle forces a search; the agent auto-falls-back to the
+                    # web when the knowledge base has nothing useful.
+                    force_web_search=web_toggle,
+                    allow_web_search=web_toggle,
+                ):
+                    if event_type == "decision":
+                        step_num += 1
+                        st.write(f":material/bolt: **Step {step_num}** · {payload}")
+                        thinking_ph.markdown(_pet_thinking(f"{payload}…"), unsafe_allow_html=True)
+                    elif event_type == "rag":
+                        retrieved_chunks = payload.get("chunks", [])
+                        rag_used = bool(payload.get("used"))
+                        sources_used = [s for s in payload.get("sources", []) if s]
+                        step_num += 1
+                        if rag_used:
+                            names = ", ".join(
+                                dict.fromkeys(s.rsplit("/", 1)[-1] for s in sources_used)
+                            ) or "indexed documents"
+                            st.write(
+                                f":material/folder_open: **Step {step_num}** · Grounding the "
+                                f"answer in {len(retrieved_chunks)} chunk(s) from {names}"
+                            )
+                        else:
+                            st.write(
+                                f":material/folder_off: **Step {step_num}** · Knowledge base "
+                                f"had nothing relevant — answering another way"
+                            )
+                        _trace_rag(tracer, prompt_text, retrieved_chunks)
+                    elif event_type == "thinking":
+                        step_num += 1
+                        st.write(f":material/public: **Step {step_num}** · Web search: *{payload}*")
+                        web_searches.append(payload)
+                        thinking_ph.markdown(
+                            _pet_thinking(f"Searching the web · “{payload}”"),
+                            unsafe_allow_html=True,
+                        )
+                    elif event_type == "chunk":
+                        if first_chunk:
+                            thinking_ph.empty()  # answer is arriving — drop the indicator
+                            first_chunk = False
+                        full_response += payload
+                        # Live render of the answer as tokens stream in
+                        response_placeholder.markdown(
+                            f'<div class="msg-row assistant">'
+                            f'<div class="bubble-assistant">'
+                            f'{_format_bubble_content(full_response)}'
+                            f'<span class="stream-caret">▌</span>'
+                            f'</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                    elif event_type == "done":
+                        agent_steps = payload
+            except Exception as exc:
+                logger.exception("Streaming failed")
+                full_response = f"⚠️ Error: {exc}"
+                blocked = True
+
+            status_box.update(
+                label="Done" if not blocked else "Error occurred",
+                state="complete" if not blocked else "error",
+                expanded=False,
+            )
+
+        thinking_ph.empty()
+
+        # Renumber steps sequentially so the reasoning trace reads Step 1, 2, 3…
+        agent_steps = agent_steps or []
+        for _i, _stp in enumerate(agent_steps, 1):
+            _stp["iteration"] = _i
+
+        # Clear the live placeholder — the message re-renders through the normal loop on rerun
+        response_placeholder.empty()
+
+        # If the response was blocked by safety checks, use diagnostic fallback
+        if not full_response.strip() or blocked:
+            if doc_count == 0 and st.session_state.rag:
+                fallback_msg = (
+                    "📌 **Note:** You haven't uploaded any documents yet. "
+                    "Try uploading a PDF or text file about your pet for more personalized answers. "
+                    "Or ask me a general pet care question!"
+                )
+            elif len(retrieved_chunks) == 0 and doc_count > 0:
+                fallback_msg = (
+                    "🔍 **No matching documents found.** Your documents don't seem to cover this topic. "
+                    "Try rephrasing your question, or ask about general pet care."
+                )
+            else:
+                fallback_msg = (
+                    "I'm sorry, I can only help with pet care-related questions. "
+                    "Please ask something about your pet's health, nutrition, training, or care."
+                )
+            full_response = fallback_msg
+
+        _trace_llm(
+            tracer,
+            user_input=prompt_text,
+            response_text=full_response,
+            tokens_used=len(prompt_text.split()) + len(full_response.split()),
+        )
+        _trace_agent_steps(tracer, agent_steps)
+        if tracer and turn_span:
+            tracer.end_turn(turn_span, full_response)
+
     # Flush so Streamlit reruns don't drop buffered traces
-    if st.session_state.get("langfuse_tracer"):
-        st.session_state.get("langfuse_tracer").flush()
+    if tracer:
+        tracer.flush()
 
     st.session_state.token_count += len(prompt_text.split()) + len(full_response.split())
     st.session_state.messages.append({
@@ -529,7 +512,7 @@ def _process_pending_prompt() -> None:
         "sources": sources_used,
         "web_searches": web_searches,
         "agent_steps": agent_steps,
-        "rag_used": bool(rag_context),
+        "rag_used": rag_used,
     })
     _sync_active_chat()
     st.rerun()
@@ -654,17 +637,63 @@ def _ms(name: str, size: int = 18, color: str = "currentColor", fill: int = 0) -
     )
 
 
-def _pet_thinking(label: str = "Petlio is thinking…") -> str:
-    """Animated pet-paw typing indicator shown while the AI is working."""
-    import html as _h
-    paws = "".join(
-        f'<span class="paw" style="animation-delay:{d}s">'
-        f'<span class="ms" style="font-size:19px;">pets</span></span>'
-        for d in ("0", "0.18", "0.36")
+# =============================================================================
+# PETCAT — Petlio's pixel-art mascot (a tiny amber cat, à la Claude's critter)
+# =============================================================================
+# Grid legend: . empty · o body · d stripe · p pink (ears/nose) · e eye
+_PETCAT_GRID = [
+    ".oo........oo.",
+    ".opo......opo.",
+    ".oooodoodoooo.",
+    "oooooooooooooo",
+    "ooeooooooooeoo",
+    "ooooooppoooooo",
+    "oooooooooooooo",
+    ".oooooooooooo.",
+    ".oooooooooooo.",
+    "..oooooooooo..",
+    "..oo..oo..oo..",
+]
+_PETCAT_TAIL = [(13, 8), (14, 7), (14, 6), (15, 5), (15, 4)]
+_PETCAT_COLORS = {"o": "#f59e0b", "d": "#d97706", "p": "#f8a8c6", "e": "#27211b"}
+
+
+def _petcat_svg(size: int = 64, cls: str = "petcat") -> str:
+    """Render the petcat as an inline pixel-art SVG (16×11 grid)."""
+    body, eyes = [], []
+    for y, row in enumerate(_PETCAT_GRID):
+        for x, ch in enumerate(row):
+            if ch == ".":
+                continue
+            rect = (
+                f'<rect x="{x}" y="{y}" width="1.04" height="1.04" '
+                f'fill="{_PETCAT_COLORS[ch]}"/>'
+            )
+            (eyes if ch == "e" else body).append(rect)
+    tail = "".join(
+        f'<rect x="{x}" y="{y}" width="1.04" height="1.04" '
+        f'fill="{_PETCAT_COLORS["o"]}"/>'
+        for x, y in _PETCAT_TAIL
     )
+    h = round(size * 11 / 16)
     return (
-        f'<div class="pet-think">{paws}'
-        f'<span class="pet-think-label">{_h.escape(label)}</span></div>'
+        f'<svg class="{cls}" width="{size}" height="{h}" viewBox="0 0 16 11" '
+        f'xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" '
+        f'role="img" aria-label="Petlio the pixel cat">'
+        f'<g class="cat-tail">{tail}</g>'
+        f'{"".join(body)}'
+        f'<g class="cat-eye">{"".join(eyes)}</g>'
+        f"</svg>"
+    )
+
+
+def _pet_thinking(label: str = "Petlio is thinking…") -> str:
+    """Animated petcat typing indicator shown while the AI is working."""
+    import html as _h
+    return (
+        f'<div class="pet-think">{_petcat_svg(34, "petcat petcat-walk")}'
+        f'<span class="pet-think-label">{_h.escape(label)}</span>'
+        f'<span class="pet-think-dots"><span>.</span><span>.</span><span>.</span></span></div>'
     )
 
 
@@ -991,7 +1020,7 @@ div[class*="st-key-ch_item_"] button {
 }
 
 /* --- Welcome state -------------------------------------------------------- */
-.welcome-wrap { text-align: center; padding: 40px 24px 20px; }
+.welcome-wrap { text-align: center; padding: 28px 24px 14px; }
 .welcome-title {
     font-size: 26px; font-weight: 800; color: var(--text-primary);
     margin: 12px 0 8px; font-family: 'Outfit', sans-serif;
@@ -1016,11 +1045,43 @@ div[class*="st-key-ch_item_"] button {
     background: #fffbeb !important;
 }
 
-/* --- Message feed — fill the viewport instead of a cramped fixed box ------ */
+/* --- One-page app shell ---------------------------------------------------- */
+/* Header + message feed + composer fit exactly one viewport: the page never
+   scrolls, only the feed does. Every wrapper between the main block container
+   and the feed becomes a flex column that lets the feed flex-grow/shrink. */
+[data-testid="stMain"] {
+    height: 100vh !important;
+    height: 100dvh !important;  /* iOS Safari: account for the dynamic toolbar */
+    overflow: hidden !important;
+}
+[data-testid="stMainBlockContainer"] {
+    height: 100% !important;
+    max-height: 100% !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+    padding-bottom: 0.9rem !important;
+}
+/* the top-level vertical block becomes the flex column for the page */
+[data-testid="stMainBlockContainer"] > div:has(.st-key-msg_feed) {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    flex-wrap: nowrap !important;
+}
+/* the wrapper that hosts the feed swallows all leftover height
+   (overrides the inline flex-basis Streamlit sets from container(height=…)) */
+div:has(> .st-key-msg_feed) {
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+}
+/* the feed fills its wrapper and is the only scrollable area on the page */
 .st-key-msg_feed {
-    height: calc(100vh - 285px) !important;
-    height: calc(100dvh - 285px) !important;  /* iOS Safari: account for the dynamic toolbar */
-    min-height: 320px !important;
+    height: 100% !important;
+    max-height: 100% !important;
     overflow-y: auto !important;
     padding-right: 6px !important;
     scrollbar-width: thin !important;
@@ -1260,8 +1321,8 @@ section[data-testid="stSidebar"] .stTextInput input:focus {
 .avatar-me .ms { font-size: 18px; color: #fff; }
 
 /* --- Welcome state ------------------------------------------------------- */
-.welcome-wrap { padding: 48px 24px 24px; }
-.welcome-title { font-size: 28px; letter-spacing: -0.03em; }
+.welcome-wrap { padding: 30px 24px 16px; }
+.welcome-title { font-size: 26px; letter-spacing: -0.03em; }
 
 /* Suggestion chips — icon + label cards */
 .st-key-sug_wrap [data-testid="stButton"] > button {
@@ -1333,21 +1394,56 @@ section[data-testid="stSidebar"] .stTextInput input:focus {
 }
 .stMarkdown [data-testid="stIconMaterial"] { color: var(--primary); }
 
-/* --- Pet "thinking" animation (shown while the AI is generating) --------- */
-@keyframes pawWalk {
-    0%, 100% { transform: translateY(0) scale(0.9); opacity: 0.3; }
-    40%      { transform: translateY(-5px) scale(1); opacity: 1; }
+/* --- Petcat mascot (pixel cat, à la Claude's critter) --------------------- */
+.petcat { display: inline-block; overflow: visible; }
+.petcat .cat-eye {
+    transform-box: fill-box; transform-origin: center;
+    animation: catBlink 4.4s ease-in-out infinite;
 }
+.petcat .cat-tail {
+    transform-box: fill-box; transform-origin: 0% 100%;
+    animation: tailWag 1.8s ease-in-out infinite;
+}
+.petcat-idle { animation: catBob 3s ease-in-out infinite; }
+.petcat-walk { animation: catBob 0.7s ease-in-out infinite; }
+@keyframes catBob {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-4px); }
+}
+@keyframes catBlink {
+    0%, 90%, 100% { transform: scaleY(1); }
+    93%, 96%      { transform: scaleY(0.1); }
+}
+@keyframes tailWag {
+    0%, 100% { transform: rotate(0deg); }
+    50%      { transform: rotate(-16deg); }
+}
+
+/* --- Petcat "thinking" indicator (shown while the AI is generating) ------- */
 .pet-think {
-    display: flex; align-items: center; gap: 3px;
+    display: flex; align-items: center; gap: 10px;
     padding: 6px 4px 10px 4px; margin-left: 42px;
 }
-.pet-think .paw { display: inline-flex; animation: pawWalk 1.05s ease-in-out infinite; }
-.pet-think .paw .ms { color: var(--primary); }
 .pet-think-label {
-    margin-left: 10px; font-size: 13px; font-weight: 600; color: var(--text-muted);
+    font-size: 13px; font-weight: 600; color: var(--text-muted);
+}
+.pet-think-dots span {
+    font-size: 15px; font-weight: 800; color: var(--primary);
+    animation: dotPulse 1.2s ease-in-out infinite;
+}
+.pet-think-dots span:nth-child(2) { animation-delay: 0.2s; }
+.pet-think-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dotPulse {
+    0%, 100% { opacity: 0.25; }
+    40%      { opacity: 1; }
 }
 @media (max-width: 768px) { .pet-think { margin-left: 0; } }
+
+/* Welcome-hero petcat */
+.welcome-cat {
+    display: flex; justify-content: center; margin-bottom: 4px;
+    filter: drop-shadow(0 10px 22px rgba(245,158,11,0.30));
+}
 
 /* blinking caret on the streaming answer */
 @keyframes caretBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
@@ -1403,11 +1499,8 @@ html, body, .stApp { max-width: 100%; overflow-x: hidden; }
         padding-right: 0.7rem !important;
     }
 
-    /* feed fills the dynamic viewport minus a slightly taller composer */
-    .st-key-msg_feed {
-        height: calc(100dvh - 300px) !important;
-        min-height: 220px !important;
-    }
+    /* one-page flex shell handles the feed height; just keep it shrinkable */
+    .st-key-msg_feed { min-height: 0 !important; }
 
     /* roomier message bubbles */
     .bubble-user { max-width: 86% !important; }
@@ -1579,17 +1672,10 @@ st.markdown(
 # Scrollable message feed — height is overridden in CSS to fill the viewport
 with st.container(height=560, border=False, key="msg_feed"):
     if not st.session_state.messages:
-        logo_big = (
-            f'<img src="{LOGO_DATA}" style="width:72px;height:72px;object-fit:contain;'
-            f'border-radius:18px;box-shadow:0 8px 24px rgba(245,158,11,0.2);'
-            f'display:block;margin:0 auto;" alt="Petlio" />'
-            if LOGO_DATA
-            else f'<div style="text-align:center;">{_ms("pets", 64, "var(--primary)")}</div>'
-        )
         st.markdown(
             f"""
             <div class="welcome-wrap">
-                {logo_big}
+                <div class="welcome-cat">{_petcat_svg(120, "petcat petcat-idle")}</div>
                 <div class="welcome-title">How can I help with your pet today?</div>
                 <div class="welcome-sub">Ask me anything about pet care, health, nutrition, and more.</div>
             </div>
@@ -1609,12 +1695,7 @@ with st.container(height=560, border=False, key="msg_feed"):
                     if st.button(f"{icon}  {sug}", key=f"sug_{i}", use_container_width=True):
                         _submit_chat_prompt(sug)
     else:
-        bot_avatar_html = (
-            f'<img src="{LOGO_DATA}" style="width:32px;height:32px;'
-            f'object-fit:contain;border-radius:10px;" alt="Petlio" />'
-            if LOGO_DATA
-            else _ms("pets", 22, "var(--primary)")
-        )
+        bot_avatar_html = _petcat_svg(26, "petcat")
         for message in st.session_state.messages:
             role = message["role"]
             content = message["content"]
